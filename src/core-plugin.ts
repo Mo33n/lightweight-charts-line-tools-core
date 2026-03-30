@@ -414,6 +414,104 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
 	}
 
 	/**
+	 * Retrieves the series data rows within a specified time range.
+	 *
+	 * @param range - An object containing the 'from' and 'to' timestamps or date strings.
+	 * @returns An array of native series data objects (e.g., OHLC) found within the requested range.
+	 */
+	public getDataInRange(range: { from: number | string; to: number | string }): any[] {
+		const seriesData = this._series.data();
+		if (seriesData.length === 0) return [];
+
+		const fromKey = typeof range.from === 'number' ? range.from : this._horzScaleBehavior.key(range.from as any);
+		const toKey = typeof range.to === 'number' ? range.to : this._horzScaleBehavior.key(range.to as any);
+
+		const startIndex = this._findBarIndex(fromKey as number, 'ceil');
+		const endIndex = this._findBarIndex(toKey as number, 'floor');
+
+		if (startIndex === -1 || endIndex === -1 || startIndex > endIndex) return [];
+
+		return seriesData.slice(startIndex, endIndex + 1) as any[];
+	}
+
+	/**
+	 * Retrieves a single data row at a specific timestamp.
+	 *
+	 * @param time - The timestamp or business day string to look up.
+	 * @returns The data object if an exact match is found, otherwise `null`.
+	 */
+	public getBarAtTime(time: number | string): any | null {
+		const targetKey = typeof time === 'number' ? time : this._horzScaleBehavior.key(time as any);
+		const index = this._findBarIndex(targetKey as number, 'exact');
+		return index !== -1 ? this._series.data()[index] : null;
+	}
+
+	/**
+	 * Finds the data row closest to a target timestamp based on the provided search mode.
+	 * Useful for cross-timeframe syncing (e.g., finding a 15m candle from a 1m timestamp).
+	 *
+	 * @param time - The target timestamp or business day string.
+	 * @param mode - The search strategy ('exact', 'floor', 'ceil', or 'nearest').
+	 * @returns The data object matching the criteria, or `null`.
+	 */
+	public getClosestBar(time: number | string, mode: 'exact' | 'floor' | 'ceil' | 'nearest'): any | null {
+		const targetKey = typeof time === 'number' ? time : this._horzScaleBehavior.key(time as any);
+		const index = this._findBarIndex(targetKey as number, mode);
+		return index !== -1 ? this._series.data()[index] : null;
+	}
+
+	/**
+	 * Retrieves the data row located at a specific pixel coordinate on the chart.
+	 *
+	 * @param x - The X-coordinate (in pixels) relative to the chart canvas.
+	 * @returns The data object corresponding to the bar under the coordinate, or `null`.
+	 */
+	public getBarAtCoordinate(x: number): any | null {
+		const timeScale = this._chart.timeScale();
+		const logical = timeScale.coordinateToLogical(x as Coordinate);
+		if (logical === null) return null;
+
+		// Convert logical index to a timestamp key using our scale behavior
+		const time = timeScale.logicalToCoordinate(logical); // get timestamp if exists
+		// In v5, dataByIndex is the official way to bridge Logical Index -> Data Row
+		return this._series.dataByIndex(Math.round(logical) as any) || null;
+	}
+
+	/**
+	 * Retrieves the first (earliest) data row currently loaded in the series.
+	 *
+	 * @returns The earliest data object, or `null` if the series is empty.
+	 */
+	public getEarliestBar(): any | null {
+		const data = this._series.data();
+		return data.length > 0 ? data[0] : null;
+	}
+
+	/**
+	 * Retrieves the last (most recent) data row currently loaded in the series.
+	 *
+	 * @returns The most recent data object, or `null` if the series is empty.
+	 */
+	public getLatestBar(): any | null {
+		const data = this._series.data();
+		return data.length > 0 ? data[data.length - 1] : null;
+	}
+
+	/**
+	 * Retrieves the full time range covered by the currently loaded series data.
+	 *
+	 * @returns An object with 'from' and 'to' timestamps, or `null` if the series is empty.
+	 */
+	public getFullTimeRange(): { from: any; to: any } | null {
+		const data = this._series.data();
+		if (data.length === 0) return null;
+		return {
+			from: data[0].time,
+			to: data[data.length - 1].time,
+		};
+	}
+
+	/**
 	 * Subscribes a callback function to the "Double Click" event.
 	 *
 	 * This event fires whenever a user double-clicks on an existing line tool.
@@ -569,6 +667,19 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
 	}
 
 	/**
+	 * Retrieves the instance of the Price Axis Label Stacking Manager.
+	 *
+	 * This manager is responsible for preventing overlap between the price labels of different tools
+	 * on the Y-axis. This accessor is primarily used internally by {@link BaseLineTool} to register its labels.
+	 *
+	 * @internal
+	 * @returns The shared {@link PriceAxisLabelStackingManager} instance.
+	 */
+	public getPriceAxisLabelStackingManager(): PriceAxisLabelStackingManager<HorzScaleItem> {
+		return this._priceAxisLabelStackingManager;
+	}
+
+	/**
 	 * Internal factory method to instantiate and register a new tool.
 	 *
 	 * This handles the common logic for `addLineTool`, `createOrUpdateLineTool`, and `importLineTools`,
@@ -630,16 +741,53 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
 	}
 
 	/**
-	 * Retrieves the instance of the Price Axis Label Stacking Manager.
+	 * Core Binary Search Engine: Finds the index of a bar based on its timestamp key.
+	 * 
+	 * Supports optimized lookup modes for crosshair synchronization and range fetching.
+	 * Time complexity: O(log n)
 	 *
-	 * This manager is responsible for preventing overlap between the price labels of different tools
-	 * on the Y-axis. This accessor is primarily used internally by {@link BaseLineTool} to register its labels.
-	 *
-	 * @internal
-	 * @returns The shared {@link PriceAxisLabelStackingManager} instance.
+	 * @private
+	 * @param targetKey - The numeric timestamp key to search for.
+	 * @param mode - The search mode ('exact', 'floor', 'ceil', 'nearest').
+	 * @returns The index of the matching bar in the series data array, or -1 if not found.
 	 */
-	public getPriceAxisLabelStackingManager(): PriceAxisLabelStackingManager<HorzScaleItem> {
-		return this._priceAxisLabelStackingManager;
+	private _findBarIndex(targetKey: number, mode: 'exact' | 'floor' | 'ceil' | 'nearest'): number {
+		const data = this._series.data();
+		let low = 0;
+		let high = data.length - 1;
+		let lastValidIndex = -1;
+
+		while (low <= high) {
+			const mid = (low + high) >> 1;
+			const midKey = this._horzScaleBehavior.key(data[mid].time as HorzScaleItem);
+
+			if (midKey === targetKey) return mid;
+
+			if (midKey < targetKey) {
+				if (mode === 'floor' || mode === 'nearest') lastValidIndex = mid;
+				low = mid + 1;
+			} else {
+				if (mode === 'ceil' || mode === 'nearest') lastValidIndex = mid;
+				high = mid - 1;
+			}
+		}
+
+		if (mode === 'exact' || lastValidIndex === -1) return -1;
+
+		// Refined 'nearest' logic to handle the scope properly
+		if (mode === 'nearest') {
+			const k1 = this._horzScaleBehavior.key(data[lastValidIndex].time as HorzScaleItem);
+			const otherIndex = k1 < targetKey ? lastValidIndex + 1 : lastValidIndex - 1;
+
+			if (otherIndex >= 0 && otherIndex < data.length) {
+				const k2 = this._horzScaleBehavior.key(data[otherIndex].time as HorzScaleItem);
+				if (Math.abs(targetKey - k2) < Math.abs(targetKey - k1)) {
+					return otherIndex;
+				}
+			}
+		}
+
+		return lastValidIndex;
 	}
 
 

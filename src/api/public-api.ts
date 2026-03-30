@@ -265,6 +265,66 @@ export interface ILineToolsApi {
 	importLineTools(json: string): boolean;
 
 	/**
+	 * Retrieves the raw series data rows within a specified time range.
+	 *
+	 * @param range - An object containing the 'from' and 'to' timestamps or date strings.
+	 * @returns An array of native series data objects (e.g., OHLC) found within the requested range.
+	 */
+	getDataInRange(range: { from: number | string; to: number | string }): any[];
+
+	/**
+	 * Retrieves a single data row at a specific timestamp.
+	 *
+	 * @param time - The timestamp or business day string to look up.
+	 * @returns The data object if an exact match is found, otherwise `null`.
+	 */
+	getBarAtTime(time: number | string): any | null;
+
+	/**
+	 * Finds the data row closest to a target timestamp based on the provided search mode.
+	 * 
+	 * This is essential for cross-timeframe synchronization (e.g., syncing a 1m chart to a 15m chart).
+	 *
+	 * @param time - The target timestamp or business day string.
+	 * @param mode - The search strategy: 
+	 * - 'exact': Only returns data if the time matches perfectly.
+	 * - 'floor': Returns the nearest data point at or BEFORE the target time (Best for 1m -> 15m sync).
+	 * - 'ceil': Returns the nearest data point at or AFTER the target time.
+	 * - 'nearest': Returns the absolute closest data point in either direction.
+	 * @returns The data object matching the search criteria, or `null`.
+	 */
+	getClosestBar(time: number | string, mode: 'exact' | 'floor' | 'ceil' | 'nearest'): any | null;
+
+	/**
+	 * Retrieves the data row located at a specific pixel coordinate on the chart.
+	 *
+	 * @param x - The X-coordinate (in pixels) relative to the chart canvas.
+	 * @returns The data object corresponding to the bar under the coordinate, or `null`.
+	 */
+	getBarAtCoordinate(x: number): any | null;
+
+	/**
+	 * Retrieves the first (earliest) data row currently loaded in the series.
+	 *
+	 * @returns The earliest data object, or `null` if the series is empty.
+	 */
+	getEarliestBar(): any | null;
+
+	/**
+	 * Retrieves the last (most recent) data row currently loaded in the series.
+	 *
+	 * @returns The most recent data object, or `null` if the series is empty.
+	 */
+	getLatestBar(): any | null;
+
+	/**
+	 * Retrieves the full time range covered by the currently loaded series data.
+	 *
+	 * @returns An object with 'from' and 'to' timestamps, or `null` if the series is empty.
+	 */
+	getFullTimeRange(): { from: any; to: any } | null;
+
+	/**
 	 * Subscribes a handler function to the event that fires when a line tool is double-clicked.
 	 *
 	 * @param handler - The callback function to execute. It receives a {@link LineToolsDoubleClickEventParams} object.

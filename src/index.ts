@@ -115,6 +115,8 @@ function createDummyPluginApi(): ILineToolsPlugin {
 	const dummyFn = () => { console.error('Line Tools Plugin not initialized correctly.'); };
 	const dummyFnString = () => { console.error('Line Tools Plugin not initialized correctly.'); return '[]'; };
 	const dummyFnBoolean = () => { console.error('Line Tools Plugin not initialized correctly.'); return false; };
+	const dummyFnNull = () => { console.error('Line Tools Plugin not initialized correctly.'); return null; };
+	const dummyFnArray = () => { console.error('Line Tools Plugin not initialized correctly.'); return []; };
 
 	return {
 		registerLineTool: dummyFn,
@@ -130,6 +132,15 @@ function createDummyPluginApi(): ILineToolsPlugin {
 		applyLineToolOptions: dummyFnBoolean,
 		exportLineTools: dummyFnString,
 		importLineTools: dummyFnBoolean,
+		// --- Data Fetching Dummy API ---
+		getDataInRange: dummyFnArray,
+		getBarAtTime: dummyFnNull,
+		getClosestBar: dummyFnNull,
+		getBarAtCoordinate: dummyFnNull,
+		getEarliestBar: dummyFnNull,
+		getLatestBar: dummyFnNull,
+		getFullTimeRange: dummyFnNull,
+		// --- Interaction Dummy API ---
 		subscribeLineToolsDoubleClick: dummyFn,
 		unsubscribeLineToolsDoubleClick: dummyFn,
 		subscribeLineToolsAfterEdit: dummyFn,
