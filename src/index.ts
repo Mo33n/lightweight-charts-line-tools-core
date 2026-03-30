@@ -147,6 +147,7 @@ function createDummyPluginApi(): ILineToolsPlugin {
 		unsubscribeLineToolsAfterEdit: dummyFn,
 		setCrossHairXY: dummyFn,
 		clearCrossHair: dummyFn,
+		setMagnetThreshold: dummyFn,
 	};
 }
 

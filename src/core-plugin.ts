@@ -44,6 +44,9 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
 	private readonly _doubleClickDelegate = new Delegate<LineToolsDoubleClickEventParams>();
 	private readonly _afterEditDelegate = new Delegate<LineToolsAfterEditEventParams>();
 
+	// The pixel tolerance for the magnetic snapping engine (0 = disabled)
+	private _magnetThreshold: number = 0;
+
 	// Throttled Stacking Update
 	private _stackingUpdateScheduled: boolean = false;
 
@@ -572,34 +575,31 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
 	/**
 	 * Sets the crosshair position to a specific pixel coordinate (x, y) on the chart.
 	 *
-	 * This method acts as a high-level proxy for the Lightweight Charts API. It converts the
-	 * provided screen pixel coordinates into the logical time and price values required by the chart
-	 * to position the crosshair.
-	 *
-	 * @param x - The x-coordinate (in pixels) relative to the chart's canvas.
-	 * @param y - The y-coordinate (in pixels) relative to the chart's canvas.
-	 * @param visible - Controls the visibility of the crosshair. If `false`, the crosshair is cleared.
+	 * @param x - The x-coordinate (in pixels).
+	 * @param y - The y-coordinate (in pixels).
+	 * @param visible - Controls the visibility.
+	 * @param providedTime - Optional. The raw time from the chart event to prevent vertical jitter.
 	 * @returns void
 	 */
-	public setCrossHairXY(x: number, y: number, visible: boolean): void {
+	public setCrossHairXY(x: number, y: number, visible: boolean, providedTime?: HorzScaleItem): void {
 		if (!visible) {
-		this.clearCrossHair();
-		return;
+			this.clearCrossHair();
+			return;
 		}
 
 		const chart = this._chart;
 		const mainSeries = this._series;
 
-		// Use the robust screenPointToLineToolPoint from InteractionManager
-		// to get an interpolated time and price from the screen coordinates.
+		// 1. Get the snapped price using the interaction manager logic
 		const lineToolPoint = this._interactionManager.screenPointToLineToolPoint(new Point(x as Coordinate, y as Coordinate));
 
 		if (lineToolPoint) {
+			// 2. Determine the time. Use providedTime if available to avoid vertical line jumping.
+			// This fixes the bug where the vertical crosshair line disappears or offsets to the left.
+			const horizontalPosition: HorzScaleItem = providedTime 
+				? providedTime 
+				: lineToolPoint.timestamp as unknown as HorzScaleItem;
 
-			// Cast lineToolPoint.timestamp directly to HorzScaleItem.
-			// This tells TypeScript that we know lineToolPoint.timestamp (a number) 
-			// is compatible with the HorzScaleItem type expected by the current chart setup.
-			const horizontalPosition: HorzScaleItem = lineToolPoint.timestamp as unknown as HorzScaleItem;
 			const priceValue: number = lineToolPoint.price;
 
 			chart.setCrosshairPosition(
@@ -608,7 +608,6 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
 				mainSeries as ISeriesApi<SeriesType, HorzScaleItem> 
 			);
 		} else {
-			// If conversion fails (e.g., coordinates are out of valid range or interpolation not possible), clear the crosshair
 			this.clearCrossHair();
 		}
 	}
@@ -624,6 +623,25 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
     public clearCrossHair(): void {
         this._chart.clearCrosshairPosition();
     }
+
+	/**
+	 * Sets the magnet threshold in pixels for snapping to price data.
+	 * 
+	 * This value is passed to the InteractionManager to influence both 
+	 * drawing tool anchors and the crosshair position.
+	 *
+	 * @param pixels - The snapping tolerance in pixels.
+	 */
+	public setMagnetThreshold(pixels: number): void {
+		this._magnetThreshold = pixels;
+		
+		// Update the interaction manager so it can apply the logic during mouse moves
+		this._interactionManager.setMagnetThreshold(pixels);
+		
+		// Trigger a requestUpdate to ensure any active ghost points or crosshairs 
+		// immediate reflect the new snapping strength.
+		this.requestUpdate();
+	}	
 
 	// #endregion
 

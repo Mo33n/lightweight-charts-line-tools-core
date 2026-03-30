@@ -380,6 +380,18 @@ export interface ILineToolsApi {
 	 */
     clearCrossHair(): void;
 
+	/**
+	 * Sets the magnet threshold in pixels for snapping to price data.
+	 *
+	 * When set to a value greater than 0, the crosshair and drawing anchors will 
+	 * automatically "lock" onto the nearest Open, High, Low, or Close price of 
+	 * a candle if the mouse cursor is within this pixel distance.
+	 *
+	 * @param pixels - The snapping tolerance in pixels. Set to 0 to disable.
+	 * @returns void
+	 */
+	setMagnetThreshold(pixels: number): void;	
+
 }
 
 // #endregion Main Plugin Interface

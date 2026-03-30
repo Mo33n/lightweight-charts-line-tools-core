@@ -476,6 +476,19 @@ export interface LineToolOptionsCommon {
 	showTimeAxisLabels: boolean;
 	priceAxisLabelAlwaysVisible: boolean;
 	timeAxisLabelAlwaysVisible: boolean;
+
+	/**
+	 * The distance in pixels within which the crosshair and tool anchors 
+	 * will snap to the nearest OHLC (Open, High, Low, Close) price of a candle.
+	 * 
+	 * If the vertical distance between the mouse and a price point is less than 
+	 * this threshold, the system overrides the raw mouse position with the 
+	 * exact price coordinate. Set to 0 to disable snapping.
+	 * 
+	 * @defaultValue 0
+	 */
+	magnetThreshold: number;
+
 	[key: string]: any;
 }
 

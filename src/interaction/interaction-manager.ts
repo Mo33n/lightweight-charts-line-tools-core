@@ -65,6 +65,12 @@ export class InteractionManager<HorzScaleItem> {
 	private _isDrag: boolean = false;
 	private _isShiftKeyDown: boolean = false;
 
+	/** 
+	 * The current magnet strength in pixels. 
+	 * @private 
+	 */
+	private _magnetThreshold: number = 0;	
+
 	/**
 	 * Initializes the Interaction Manager, setting up all internal references and subscribing
 	 * to necessary DOM and Lightweight Charts events.
@@ -110,7 +116,16 @@ export class InteractionManager<HorzScaleItem> {
 	 */
 	public screenPointToLineToolPoint(screenPoint: Point): LineToolPoint | null {
 		const timeScale = this._chart.timeScale();
-		const price = this._series.coordinateToPrice(screenPoint.y as Coordinate);
+
+		// --- 1. DETERMINE INPUT Y ---
+		// We prioritize the Shift Key. If Shift is held, we use raw Y because 
+		// the line tools will apply their own geometric constraints (e.g., horizontal lock).
+		// If Shift is NOT held, we pass the Y through the Magnet Engine.
+		const targetY = this._isShiftKeyDown 
+			? screenPoint.y 
+			: this._getSnappedY(screenPoint.x, screenPoint.y);
+
+		const price = this._series.coordinateToPrice(targetY as Coordinate);
 
 		const logical = timeScale.coordinateToLogical(screenPoint.x as Coordinate);
 	 
@@ -258,6 +273,70 @@ export class InteractionManager<HorzScaleItem> {
 			});
 		}
 	}
+
+	/**
+	 * Updates the internal magnet threshold used for snapping.
+	 * 
+	 * @param pixels - The threshold distance in pixels.
+	 * @internal
+	 */
+	public setMagnetThreshold(pixels: number): void {
+		this._magnetThreshold = pixels;
+	}	
+
+	/**
+	 * Calculates the "Snapped" Y-coordinate for a given screen point.
+	 * 
+	 * It identifies the candle at the mouse X position, converts its OHLC values 
+	 * to pixels, and finds the closest value within the magnet threshold.
+	 * 
+	 * @param x - The screen X coordinate.
+	 * @param y - The raw screen Y coordinate.
+	 * @returns The snapped Y coordinate if within threshold, otherwise the raw Y.
+	 * @private
+	 */
+	private _getSnappedY(x: number, y: number): number {
+		// 1. If magnet is off, return raw Y immediately.
+		if (this._magnetThreshold <= 0) return y;
+
+		// 2. Identify the bar under the cursor using the plugin's data fetching API.
+		const bar = this._plugin.getBarAtCoordinate(x);
+		
+		// 3. Ensure we have a valid candle with OHLC data.
+		if (!bar || typeof bar.close === 'undefined') return y;
+
+		// 4. Convert OHLC prices to screen Y-coordinates (pixels).
+		const prices = [
+			{ val: bar.close, type: 'C' },
+			{ val: bar.high, type: 'H' },
+			{ val: bar.low, type: 'L' },
+			{ val: bar.open, type: 'O' }
+		];
+
+		const candidates = prices.map(p => ({
+			y: this._series.priceToCoordinate(p.val) as number,
+			type: p.type
+		})).filter(c => c.y !== null);
+
+		if (candidates.length === 0) return y;
+
+		// 5. Find the candidate with the minimum distance to the mouse.
+		// If distances are equal, the order in our 'prices' array acts as a tie-breaker.
+		let nearestY = y;
+		let minDistance = Infinity;
+
+		for (const candidate of candidates) {
+			const distance = Math.abs(y - candidate.y);
+			
+			if (distance < minDistance) {
+				minDistance = distance;
+				nearestY = candidate.y;
+			}
+		}
+
+		// 6. Apply the threshold gate.
+		return minDistance <= this._magnetThreshold ? nearestY : y;
+	}	
 
 	/**
 	 * Finalizes the interactive creation of a tool once its required number of points have been placed.
@@ -1130,7 +1209,19 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleCrosshairMove(params: MouseEventParams<HorzScaleItem>): void {
-		// --- Ghosting Logic ---
+		// --- Passive Magnet Logic (Browsing & Edit Mode) ---
+		// We remove "!this._draggedTool" so that the crosshair remains 
+		// "glued" to the anchor handle while you are dragging/editing it.
+		if (this._magnetThreshold > 0 && !this._isShiftKeyDown && !this._currentToolCreating) {
+			// FIX: Only override if we are over actual data (params.time exists).
+			// This prevents the vertical line from jumping to the left in the blank space.
+			if (params.point && params.time) {
+				this._plugin.setCrossHairXY(params.point.x, params.point.y, true, params.time);
+			}
+		}
+
+
+		// --- Ghosting Logic (Drawing Mode) ---
 		const toolBeingCreated = this._currentToolCreating;
 		if (toolBeingCreated) {
 			const rawScreenPoint = params.point ? new Point(params.point.x, params.point.y) : null;
@@ -1141,18 +1232,24 @@ export class InteractionManager<HorzScaleItem> {
                 // We use setLastPoint to visualize the *final* tool location pre-click.
                 const logicalPoint = this.screenPointToLineToolPoint(rawScreenPoint);
                 if (logicalPoint) {
+					// REFINEMENT: Force crosshair sync for 1-point tools (Horizontal/Vertical Lines)
+					// Only snap crosshair if we are over actual data
+					if (params.time) {
+						this._plugin.setCrossHairXY(params.point!.x, params.point!.y, true, params.time);
+					}
+
                     toolBeingCreated.setLastPoint(logicalPoint);
                     this._plugin.requestUpdate();
                 }
                 
                 // We SKIP the complex multi-point ghosting and constraint logic below.
-                return; 
+                return;
             }			
- 
+
 			// GOTCHA if i used the crosshair subscribe via sourceEvent , TouchMouseEventData, shiftKey it is spotty
 			// it will only sometime show shift is true, so i use true browser events to get a reliable stream of shift data
 			const isShiftKeyDown = this._isShiftKeyDown;
- 
+
 			let finalScreenPoint: Point | null = rawScreenPoint;
 
 			// NEW: Check if the tool supports click-click creation (ghosting is part of this)
@@ -1201,7 +1298,12 @@ export class InteractionManager<HorzScaleItem> {
 				const logicalPoint = this.screenPointToLineToolPoint(finalScreenPoint);
 
 				if (logicalPoint) {
-					// We use setLastPoint for ghosting until the final point is committed.
+					// Use rawScreenPoint (already checked for null) instead of force-asserting params.point!
+					if (params.time && rawScreenPoint) {
+						this._plugin.setCrossHairXY(rawScreenPoint.x, rawScreenPoint.y, true, params.time);
+					}
+
+					// Update tool ghosting
 					if (toolBeingCreated.points().length > 0) {
 						toolBeingCreated.setLastPoint(logicalPoint);
 					}
@@ -1216,7 +1318,9 @@ export class InteractionManager<HorzScaleItem> {
 			return;
 		}
 
-		// --- Hover Logic ---
+		// --- Hover Logic (Hit Test Mode) ---
+		// We use the RAW params.point here. Hit-testing for tool selection should 
+		// always follow the physical mouse tip, not the snapped crosshair lines.
 		const point = params.point ? new Point(params.point.x, params.point.y) : null;
 		const hitResult = point ? this._hitTest(point) : null;
 		const hoveredTool = hitResult ? hitResult.tool : null;
