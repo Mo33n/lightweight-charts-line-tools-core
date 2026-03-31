@@ -113,6 +113,46 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	public abstract _internalHitTest(x: Coordinate, y: Coordinate): HitTestResult<any> | null;
 
 	/**
+	 * Calculates whether the tool is currently visible within the chart's viewport.
+	 * 
+	 * ### The "Calculate Once, Use Everywhere" Pattern
+	 * This method is the central point for the tool's geometric visibility logic (Culling). 
+	 * It is called automatically by {@link updateAllViews} before any rendering occurs.
+	 * 
+	 * ### Why implement this?
+	 * 1. **Performance:** By determining if a tool is off-screen before drawing, we avoid 
+	 *    expensive canvas operations and coordinate math in the Views.
+	 * 2. **Synchronization:** Storing the result in the Model ensures that the Main Pane, 
+	 *    the Price Axis, and the Time Axis all "agree" on whether they should be visible. 
+	 *    This prevents bugs like a label showing up for a tool that isn't on screen.
+	 * 
+	 * ### Implementation Guide
+	 * Concrete subclasses should override this method and use the `getToolCullingState` utility. 
+	 * You must pass the specific geometric "quirks" of your tool (e.g., if it's 
+	 * infinite horizontally like a Horizontal Line, or has Rays/Extensions).
+	 * 
+	 * **Important:** Your implementation must end by calling {@link _setIsCulled} with the result.
+	 * 
+	 * @example
+	 * ```ts
+	 * protected override updateCullingState(): void {
+	 *     const result = getToolCullingState(this.points(), this, this.options().line.extend);
+	 *     this._setIsCulled(result !== OffScreenState.Visible);
+	 * }
+	 * ```
+	 * 
+	 * @protected
+	 * @returns void
+	 */
+	protected updateCullingState(): void {
+		/**
+		 * Default implementation is a no-op.
+		 * This allows tools to be "always visible" by default, or allows for 
+		 * a gradual migration of culling logic from Pane Views to the Model.
+		 */
+	}
+
+	/**
 	 * Provides an array of price axis view components to Lightweight Charts for rendering the tool's labels.
 	 *
 	 * This implementation wraps the internal `_priceAxisLabelViews` array.
@@ -285,6 +325,12 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	private _currentPoint: Point = new Point(0, 0);
 	private _isDestroying: boolean = false;
 
+	/**
+	 * Internal flag indicating if the tool is currently positioned off-screen.
+	 * @private
+	 */
+	private _isCulled: boolean = false;	
+
 	private _attachedPane: IPaneApi<HorzScaleItem> | null = null; 
 
 	/**
@@ -330,6 +376,11 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 		// We assume the concrete tool has already handled the deep copy and merge,
 		// and is passing the final, ready-to-use options object.
 		this._setupOptions(finalOptions);
+
+		// ensure magnetThreshold has a default if the plugin/user didn't provide one
+		if (this._options.magnetThreshold === undefined) {
+			this._options.magnetThreshold = 0;
+		}
 
 		// *** NEW LOGIC: Create persistent axis views here ***
 		// If pointsCount is -1 (dynamic), we will handle view creation inside updateAllViews.
@@ -514,6 +565,26 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	 * @returns `true` if in creation mode, `false` otherwise.
 	 */
 	public isCreating(): boolean { return this._creating; }
+
+	/**
+	 * Checks if the tool is currently culled (off-screen).
+	 * 
+	 * When a tool is culled, its pane renderers and axis labels should typically 
+	 * be hidden to optimize performance and prevent visual clutter.
+	 * 
+	 * @returns `true` if culled, `false` if visible.
+	 */
+	public isCulled(): boolean { return this._isCulled; }
+
+	/**
+	 * Updates the internal culling state.
+	 * 
+	 * @param culled - The new culling state.
+	 * @protected
+	 */
+	protected _setIsCulled(culled: boolean): void {
+		this._isCulled = culled;
+	}	
 
 	/**
 	 * Sets the tool's selection state and triggers a view update to reflect the change.
@@ -820,6 +891,10 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	 * @returns void
 	 */
 	public updateAllViews(): void {
+
+		// Synchronously update the culling state before views are notified ---
+		this.updateCullingState();
+
 		// Update the main pane view(s) for the tool's body (the line, rectangle, etc.)
 		this._paneViews.forEach(view => view.update());
 

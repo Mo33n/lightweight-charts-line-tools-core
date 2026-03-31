@@ -487,7 +487,7 @@ export interface LineToolOptionsCommon {
 	 * 
 	 * @defaultValue 0
 	 */
-	magnetThreshold: number;
+	magnetThreshold?: number;
 
 	[key: string]: any;
 }

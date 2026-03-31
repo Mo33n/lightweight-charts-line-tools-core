@@ -193,6 +193,16 @@ export class LineToolTimeAxisLabelView<HorzScaleItem> implements ITimeAxisView {
 		const data = this._rendererData;
 		data.visible = false; // Start as invisible
 
+		/**
+		 * CULLING CHECK
+		 * If the parent tool has been determined to be off-screen by the Model's
+		 * geometric culling engine, we skip all label calculations. This ensures
+		 * the label disappears in sync with the tool's body.
+		 */
+		if (this._tool.isCulled()) {
+			return;
+		}
+
 		const toolOptions = this._tool.options();
 
 		// Determine label visibility based on options and active state

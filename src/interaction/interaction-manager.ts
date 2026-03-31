@@ -296,8 +296,17 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _getSnappedY(x: number, y: number): number {
-		// 1. If magnet is off, return raw Y immediately.
-		if (this._magnetThreshold <= 0) return y;
+
+		const activeTool = this._draggedTool || this._currentToolCreating;
+ 
+		const toolThreshold = activeTool?.options().magnetThreshold;
+		const effectiveThreshold = (toolThreshold !== undefined && toolThreshold > 0) 
+			? toolThreshold 
+			: this._magnetThreshold;
+
+		// 1: Use effectiveThreshold here. 
+		// If the tool has an override, we want to proceed even if the global setting is 0.
+		if (effectiveThreshold <= 0) return y;
 
 		// 2. Identify the bar under the cursor using the plugin's data fetching API.
 		const bar = this._plugin.getBarAtCoordinate(x);
@@ -335,7 +344,8 @@ export class InteractionManager<HorzScaleItem> {
 		}
 
 		// 6. Apply the threshold gate.
-		return minDistance <= this._magnetThreshold ? nearestY : y;
+		// Use effectiveThreshold here to gate the final snap.
+		return minDistance <= effectiveThreshold ? nearestY : y;
 	}	
 
 	/**

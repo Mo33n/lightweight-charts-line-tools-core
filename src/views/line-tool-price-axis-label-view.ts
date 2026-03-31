@@ -114,6 +114,21 @@ export class LineToolPriceAxisLabelView<HorzScaleItem> extends PriceAxisView imp
 		const point = this._tool.getPoint(this._pointIndex);
 		const labelId = this._tool.id() + '-p' + this._pointIndex;
 
+		/**
+		 * CULLING CHECK
+		 * If the parent tool determines it is off-screen, we must hide the label
+		 * and ensure it is removed from the stacking manager to prevent it from
+		 * pushing other visible labels out of place.
+		 */
+		if (this._tool.isCulled()) {
+			if (this._isRegistered) {
+				this._priceAxisLabelStackingManager.unregisterLabel(labelId);
+				this._isRegistered = false;
+				this.setFixedCoordinateFromManager(undefined);
+			}
+			return;
+		}
+
 		// 1. Calculate the tool's current interaction state
 		const isToolActive = this._tool.isSelected() || this._tool.isHovered() || this._tool.isEditing() || this._tool.isCreating();
 		
