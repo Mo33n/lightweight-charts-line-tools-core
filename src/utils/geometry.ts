@@ -840,95 +840,87 @@ export function convertUTCTimestampToDateString(timestamp: UTCTimestamp): string
 /**
  * **Critical Core Utility: Time Extrapolation**
  * 
- * Interpolates (or extrapolates) a precise Time value for a specific Logical Index, primarily to handle 
- * coordinates in the chart's "blank space" (the future area where no data bars exist yet).
+ * Converts a fractional logical index into a precise Time value. 
  * 
- * ### The Problem it Solves
- * Native Lightweight Charts APIs (like `coordinateToTime`) often return `null` or snap to the nearest existing bar 
- * when querying coordinates in the empty space to the right of the series. However, drawing tools (like Ray Lines 
- * or Fibonacci Retracements) often need to project strictly into this future space.
+ * ### Architecture & Performance:
+ * 1. **Zero-Allocation:** We strictly avoid `series.data()` to prevent memory leaks during 60fps interaction loops.
+ * 2. **Dynamic Anchoring (Gap Protection):** 
+ *    - If the index is *inside* the chart, it interpolates exactly between the two nearest bars (perfectly absorbing weekend gaps).
+ *    - If the index is *outside* the chart (the future/past), it anchors to the very last (or first) two bars to project outward linearly without dragging historical gaps into the math.
  * 
- * ### How it Works
- * 1. It samples the first two data points of the series to calculate the exact time interval (e.g., 1 day, 1 minute) between bars.
- * 2. It applies a linear extrapolation formula: `TargetTime = StartTime + (TargetLogicalIndex * TimeInterval)`.
- * 
- * ### Interplay & Importance
- * * **Interaction:** This is the engine behind `InteractionManager`. When you move your mouse into the empty space, 
- *   this function converts that screen position into a valid Timestamp, allowing the tool's "Ghost Point" to be drawn smoothly.
- * * **Inverse Operation:** Its counterpart is {@link interpolateLogicalIndexFromTime}, which maps these timestamps back to screen coordinates.
- * 
- * @typeParam HorzScaleItem - The type of the horizontal scale item (e.g., `UTCTimestamp`).
+ * @typeParam HorzScaleItem - The type of the horizontal scale item.
  * @param chart - The chart API instance.
- * @param series - The series API instance (required to sample data density/interval).
+ * @param series - The series API instance.
  * @param logicalIndex - The logical index (float) to convert into a time.
- * @returns The extrapolated `Time`, or `null` if the series has insufficient data ( < 2 bars) to determine an interval.
+ * @returns The extrapolated `Time`, or `null` if the series lacks data.
  */
 export function interpolateTimeFromLogicalIndex<HorzScaleItem>(
-	chart: IChartApiBase<HorzScaleItem>, // NEW: Now accepts chart instance
-	series: ISeriesApi<SeriesType, HorzScaleItem>, // Keep series for data access
+	chart: IChartApiBase<HorzScaleItem>,
+	series: ISeriesApi<SeriesType, HorzScaleItem>,
 	logicalIndex: number
 ): Time | null {
-	if (!chart || !series) { // Also check if chart is defined
-		console.warn("[interpolateTimeFromLogicalIndex] chart or series is not defined.");
-		return null;
+	if (!chart || !series) return null;
+
+	const timeScale = chart.timeScale();
+
+	// --- TIER 1: INTERNAL RANGE (The Native Truth) ---
+	
+	// We check if a bar exists at this exact rounded index. 
+	// This is an O(1) operation and is the only way to perfectly respect weekend gaps.
+	const roundedIndex = Math.round(logicalIndex);
+	const exactBar = series.dataByIndex(roundedIndex, 0); // 0 = MismatchDirection.None
+	
+	if (exactBar) {
+		return exactBar.time as unknown as Time;
 	}
 
-	const timeScale = chart.timeScale(); // Access timeScale directly from chart
+	// --- TIER 2: EXTERNAL RANGE (Dynamic Anchor Logic) ---
+	
+	// If we are here, we are in the "Blank Space" (Future or Past).
+	// We need the boundaries of the chart to decide which way to anchor.
+	const firstBar = series.dataByIndex(-Number.MAX_SAFE_INTEGER, 1);
+	const lastBar = series.dataByIndex(Number.MAX_SAFE_INTEGER, -1);
+	
+	if (!firstBar || !lastBar) return null;
 
-	// Retrieve data for the first two points in the series to calculate the time interval.
-	// This assumes that there are at least two data points to establish a reliable interval.
-	// If the chart starts empty, this will need a fallback (e.g., using default bar spacing).
-	const dataAtIndex0 = series.dataByIndex(0, 0);
-	const dataAtIndex1 = series.dataByIndex(1, 0);
+	// Use the public API chain (Time -> Coordinate -> Logical) to find boundaries.
+	// Note: LWC v5 allows mapping coordinates even for off-screen bars.
+	const lastCoord = timeScale.timeToCoordinate(lastBar.time as unknown as HorzScaleItem);
+	const lastLogical = lastCoord !== null ? timeScale.coordinateToLogical(lastCoord) : null;
 
-	if (!dataAtIndex0 || !dataAtIndex1) {
-		// Fallback for very few data points: try to use visible logical range or timeScale options
-		const visibleLogicalRange = timeScale.getVisibleLogicalRange();
+	if (lastLogical === null) return null;
 
-		if (visibleLogicalRange && visibleLogicalRange.to - visibleLogicalRange.from > 0) {
-			const logicalSpan = visibleLogicalRange.to - visibleLogicalRange.from;
-			// Use coordinateToTime on the chart's time scale directly
-			const timeFrom = timeScale.coordinateToTime(timeScale.logicalToCoordinate(visibleLogicalRange.from) as Coordinate) as number;
-			const timeTo = timeScale.coordinateToTime(timeScale.logicalToCoordinate(visibleLogicalRange.to) as Coordinate) as number;
+	const isFuture = logicalIndex > lastLogical;
+	const anchorBar2 = isFuture ? lastBar : firstBar;
+	const anchorLogical2 = isFuture ? lastLogical : 0; // First bar is index 0 in a standard setup
+	
+	// Fetch the neighbor bar to calculate the interval (Time per Bar)
+	const neighborIndex = isFuture ? lastLogical - 1 : 1;
+	const anchorBar1 = series.dataByIndex(neighborIndex, 0) || (isFuture ? firstBar : lastBar);
 
+	// Convert timestamps to numbers for math
+	const t1 = typeof anchorBar1.time === 'string' 
+		? convertDateStringToUTCTimestamp(anchorBar1.time as unknown as string) 
+		: Number(anchorBar1.time);
+	const t2 = typeof anchorBar2.time === 'string' 
+		? convertDateStringToUTCTimestamp(anchorBar2.time as unknown as string) 
+		: Number(anchorBar2.time);
 
-			if (timeFrom !== null && timeTo !== null && logicalSpan > 0) {
-				const timeSpan = timeTo - timeFrom;
-				const timePerLogicalUnit = timeSpan / logicalSpan;
-				const logicalOffset = logicalIndex - visibleLogicalRange.from;
-				return (timeFrom + logicalOffset * timePerLogicalUnit) as UTCTimestamp;
-			}
-		}
+	const interval = t2 - t1;
+	if (interval === 0) return null;
 
-		console.warn("[interpolateTimeFromLogicalIndex] Not enough data points or visible range for interpolation. Cannot determine time.");
-		// If we can't get a reliable interval, return null.
-		return null;
-	}
+	// Calculate extrapolation from the edge anchor
+	const logicalDelta = logicalIndex - anchorLogical2;
+	const interpolatedTime = t2 + (logicalDelta * interval);
 
-	const startTime = typeof dataAtIndex0.time === 'string'
-		? convertDateStringToUTCTimestamp(dataAtIndex0.time)
-		: dataAtIndex0.time;
-	const endTime = typeof dataAtIndex1.time === 'string'
-		? convertDateStringToUTCTimestamp(dataAtIndex1.time)
-		: dataAtIndex1.time;
-
-	// Calculate the time interval between the two data points (e.g., 86400 for daily bars).
-	const interval = (Number(endTime) - Number(startTime));
-
-	// Calculate the difference in logical units from the first data point.
-	// We assume that `logicalIndex` relates linearly to `time`.
-	const logicalDelta = logicalIndex - 0; // Assuming the first data point (index 0) corresponds to logical 0.
-
-	// Interpolate the time for the given logical index.
-	const interpolatedTime = Number(startTime) + logicalDelta * interval;
-
-	// Return the interpolated time in the correct format (UTCTimestamp or string).
-	if (typeof dataAtIndex0.time === 'string') {
+	// Ensure we return the format the series is already using
+	if (typeof firstBar.time === 'string') {
 		return convertUTCTimestampToDateString(interpolatedTime as UTCTimestamp) as string;
 	} else {
 		return interpolatedTime as UTCTimestamp;
 	}
 }
+
 
 /**
  * **Critical Core Utility: Viewport & Culling Bounds**
@@ -978,83 +970,86 @@ export function getExtendedVisiblePriceRange<HorzScaleItem>(tool: BaseLineTool<H
 /**
  * **Critical Core Utility: Logical Index Recovery**
  * 
- * Calculates the Logical Index for a specific Timestamp using linear extrapolation. This is the mathematical 
- * inverse of {@link interpolateTimeFromLogicalIndex}.
+ * Calculates the exact or estimated Logical Index for a specific Timestamp.
  * 
- * ### The Problem it Solves
- * When a drawing tool is saved and later reloaded, its definition contains raw Timestamps (e.g., "2025-01-01"). 
- * If that date is in the future (the "blank space"), the chart has no internal record of it. 
- * The standard `timeScale.timeToCoordinate()` may fail or return `null` for these future dates.
+ * ### Architecture & Performance:
+ * Uses LWC's native `timeToCoordinate` for immediate resolution of historical data.
+ * If the time falls in a gap or the future, it implements an **Anti-Clamping Check** 
+ * to prove it is outside the data array before falling back to Dynamic Anchor extrapolation.
  * 
- * ### How it Works
- * It calculates the series' time interval (delta between bars) and determines how many "steps" (logical indices) 
- * the target timestamp is away from a known anchor point (the first bar).
- * 
- * ### Interplay & Importance
- * * **Rendering:** This is the backbone of `BaseLineTool.pointToScreenPoint()`. It allows the renderers to figure out 
- *   exactly where on the X-axis (in pixels) a saved future timestamp should be drawn.
- * * **Accuracy:** By using the calculated interval, it ensures that tools drawn in the future align perfectly 
- *   with the grid, preserving the visual continuity of the time scale.
- * 
- * @typeParam HorzScaleItem - The type of the horizontal scale item.
  * @param chart - The chart API instance.
- * @param series - The series API instance (used to determine the time interval between bars).
+ * @param series - The series API instance.
  * @param timestamp - The target timestamp to convert.
- * @returns The calculated `Logical` index, or `null` if the series has insufficient data.
+ * @returns The calculated `Logical` index, or `null`.
  */
 export function interpolateLogicalIndexFromTime<HorzScaleItem>(
-	chart: IChartApiBase<HorzScaleItem>, // Chart is passed but mainly for context/consistency, not used here directly after removing timeToLogical
+	chart: IChartApiBase<HorzScaleItem>,
 	series: ISeriesApi<SeriesType, HorzScaleItem>,
 	timestamp: Time
 ): Logical | null {
-	if (!series) {
-		console.warn("[interpolateLogicalIndexFromTime] series is not defined.");
-		return null;
+	if (!series || !chart) return null;
+
+	const timeScale = chart.timeScale();
+	const targetTimeNum = typeof timestamp === 'string' ? convertDateStringToUTCTimestamp(timestamp) : Number(timestamp);
+
+	// --- TIER 1: THE NATIVE TRUTH (With Anti-Clamping) ---
+	const coordinate = timeScale.timeToCoordinate(timestamp as unknown as HorzScaleItem);
+	if (coordinate !== null) {
+		const logical = timeScale.coordinateToLogical(coordinate);
+		if (logical !== null) {
+			// Anti-Clamping Check: If LWC "snapped" a future date to the last historical candle, 
+			// the timestamps won't match. We verify the timestamp to prove we aren't being lied to.
+			const checkBar = series.dataByIndex(Math.round(logical), 0);
+			if (checkBar) {
+				const checkTimeNum = typeof checkBar.time === 'string' ? convertDateStringToUTCTimestamp(checkBar.time) : Number(checkBar.time);
+				if (checkTimeNum === targetTimeNum) {
+					return logical; // Exact match found!
+				}
+			}
+		}
 	}
 
-	// Retrieve data for the first two points in the series to calculate the time interval.
-	// This approach avoids reliance on `timeScale.timeToLogical`.
-	const dataAtIndex0 = series.dataByIndex(0, 0);
-	const dataAtIndex1 = series.dataByIndex(1, 0);
+	// --- TIER 2: ESTIMATION (Fast Anchor Logic) ---
+	const firstBar = series.dataByIndex(-Number.MAX_SAFE_INTEGER, 1);
+	const lastBar = series.dataByIndex(Number.MAX_SAFE_INTEGER, -1);
+	
+	if (!firstBar || !lastBar) return null;
 
-	if (!dataAtIndex0 || !dataAtIndex1) {
-		console.warn("[interpolateLogicalIndexFromTime] Not enough data points to reliably interpolate logical index.");
-		return null; // Cannot interpolate without at least two data points
+	const firstCoord = timeScale.timeToCoordinate(firstBar.time as unknown as HorzScaleItem);
+	const lastCoord = timeScale.timeToCoordinate(lastBar.time as unknown as HorzScaleItem);
+	
+	const firstLogical = firstCoord !== null ? timeScale.coordinateToLogical(firstCoord) : 0;
+	const lastLogical = lastCoord !== null ? timeScale.coordinateToLogical(lastCoord) : 0;
+
+	if (firstLogical === null || lastLogical === null) return null;
+
+	let anchorLogical = firstLogical;
+	let anchorBar1 = firstBar;
+	let anchorBar2 = series.dataByIndex(firstLogical + 1, 0) || lastBar;
+
+	const firstTimeNum = typeof firstBar.time === 'string' ? convertDateStringToUTCTimestamp(firstBar.time) : Number(firstBar.time);
+
+	// If projecting into the future, anchor to the LAST bar
+	if (targetTimeNum > firstTimeNum) {
+		anchorLogical = lastLogical;
+		anchorBar1 = series.dataByIndex(lastLogical - 1, 0) || firstBar;
+		anchorBar2 = lastBar;
 	}
 
-	const time0 = typeof dataAtIndex0.time === 'string'
-		? convertDateStringToUTCTimestamp(dataAtIndex0.time)
-		: dataAtIndex0.time;
-	const time1 = typeof dataAtIndex1.time === 'string'
-		? convertDateStringToUTCTimestamp(dataAtIndex1.time)
-		: dataAtIndex1.time;
+	const t1 = typeof anchorBar1.time === 'string' ? convertDateStringToUTCTimestamp(anchorBar1.time) : Number(anchorBar1.time);
+	const t2 = typeof anchorBar2.time === 'string' ? convertDateStringToUTCTimestamp(anchorBar2.time) : Number(anchorBar2.time);
 
-	const interval = (Number(time1) - Number(time0));
-	if (interval === 0) {
-		console.warn("[interpolateLogicalIndexFromTime] Series data points have zero time interval, cannot interpolate logical index.");
-		return null; // Avoid division by zero
-	}
+	const interval = t2 - t1;
+	if (interval === 0) return null;
 
-	// Convert the given timestamp to a number (UTCTimestamp) for calculations
-	const givenTimeNum = typeof timestamp === 'string'
-		? convertDateStringToUTCTimestamp(timestamp)
-		: Number(timestamp);
+	// Extrapolate relative to the second anchor bar
+	const timeDiff = targetTimeNum - t2;
+	const logicalDelta = timeDiff / interval;
 
-	// Calculate the difference in time from the given timestamp to the starting point
-	const timeDiff = givenTimeNum - Number(time0);
-
-	// Calculate the logical index based on the time difference and interval
-	// Assuming logical index 0 corresponds to dataAtIndex0
-	const logicalIndex = timeDiff / interval;
-
-	return logicalIndex as Logical;
+	return (anchorLogical + logicalDelta) as Logical;
 }
 
 
-// NOTE: The `interpolateLogicalIndexFromTime` function might also be useful for complex scenarios
-// but is not strictly required for the immediate goal of "drawing in blank space" for creation.
-// It could be added later if you need to convert an arbitrary timestamp (e.g., from a saved tool in blank space)
-// back into a logical index for rendering purposes.
 
 // #endregion Time/Logical Index Interpolation Utilities
 

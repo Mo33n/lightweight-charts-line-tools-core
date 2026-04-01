@@ -86,14 +86,15 @@ export class TimeAxisViewRenderer implements ITimeAxisViewRenderer {
 			let coordinate = this._data!.coordinate; // X-coordinate of the mark itself
 			let x1 = Math.floor(coordinate - labelWidthHalf) + 0.5; // Start X of the label box
 
+			//no need for this, this is causing issues with trying to keep the the time leables visible no matter what, i want to rely on culling to decide.
 			// Adjust x1 to keep label within time scale bounds (v3.8 logic)
-			if (x1 < 0) {
-				coordinate = coordinate + Math.abs(0 - x1);
-				x1 = Math.floor(coordinate - labelWidthHalf) + 0.5;
-			} else if (x1 + labelWidth > timeScaleWidth) {
-				coordinate = coordinate - Math.abs(timeScaleWidth - (x1 + labelWidth));
-				x1 = Math.floor(coordinate - labelWidthHalf) + 0.5;
-			}
+			//if (x1 < 0) {
+			//	coordinate = coordinate + Math.abs(0 - x1);
+			//	x1 = Math.floor(coordinate - labelWidthHalf) + 0.5;
+			//} else if (x1 + labelWidth > timeScaleWidth) {
+			//	coordinate = coordinate - Math.abs(timeScaleWidth - (x1 + labelWidth));
+			//	x1 = Math.floor(coordinate - labelWidthHalf) + 0.5;
+			//}
 
 			const x2 = x1 + labelWidth; // End X of the label box
 

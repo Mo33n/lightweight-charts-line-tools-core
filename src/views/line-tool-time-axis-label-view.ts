@@ -191,22 +191,34 @@ export class LineToolTimeAxisLabelView<HorzScaleItem> implements ITimeAxisView {
      */
 	private _updateImpl(): void {
 		const data = this._rendererData;
-		data.visible = false; // Start as invisible
+
+		// --- FIX: THE "HARD RESET" ---
+		// We explicitly clear the renderer data at the start of every update.
+		// This prevents "stale" text or positions from flickering on screen
+		// when the tool is moving fast or being culled.
+		data.visible = false;
+		data.text = '';
+		data.coordinate = 0 as Coordinate;
 
 		/**
 		 * CULLING CHECK
 		 * If the parent tool has been determined to be off-screen by the Model's
-		 * geometric culling engine, we skip all label calculations. This ensures
-		 * the label disappears in sync with the tool's body.
+		 * geometric culling engine, we skip all label calculations.
 		 */
 		if (this._tool.isCulled()) {
+			// Because we did the "Hard Reset" above, returning here now 
+			// correctly tells the chart that this label is 100% invisible.
 			return;
 		}
 
 		const toolOptions = this._tool.options();
 
 		// Determine label visibility based on options and active state
-		const isToolActive = this._tool.isSelected() || this._tool.isHovered() || this._tool.isEditing() || this._tool.isCreating();
+		// We narrow the definition of "Active" to exclude hovering.
+		// Labels will now only appear if the tool is selected, being edited, 
+		// or in the process of being created.
+		const isToolActive = this._tool.isSelected() || this._tool.isEditing() || this._tool.isCreating();
+
 
 		// The label is visible if:
 		// 1. Tool is generally visible AND
@@ -222,6 +234,31 @@ export class LineToolTimeAxisLabelView<HorzScaleItem> implements ITimeAxisView {
 			return;
 		}
 
+		// --- TIERED FORMATTING LOGIC ---
+
+		// Prepare the time value for formatting
+		const timeAsHorzScaleItem = point.timestamp as unknown as HorzScaleItem;
+
+		// Priority 1: Check for Plugin-level override
+		const pluginFormatter = this._tool.coreApi().getTimeFormatter();
+		
+		// Priority 2: Check for Chart-level localization
+		const chartFormatter = this._chart.options().localization.timeFormatter;
+
+		if (pluginFormatter) {
+			// Level 1 Wins
+			data.text = pluginFormatter(timeAsHorzScaleItem);
+		} else if (chartFormatter) {
+			// Level 2 Wins (Automatically picks up your Los Angeles / Moment.js logic)
+			data.text = chartFormatter(timeAsHorzScaleItem);
+		} else {
+			// Level 3 Fallback: Standard scale behavior
+			const internalHorzItem = this._tool.horzScaleBehavior.convertHorzItemToInternal(timeAsHorzScaleItem);
+			data.text = this._tool.horzScaleBehavior.formatHorzItem(internalHorzItem);
+		}
+
+		// --- END TIERED FORMATTING LOGIC ---		
+
 		// Determine the background color for the label
 		const backgroundColor = this._tool.timeAxisLabelColor();
 		if (backgroundColor === null) {
@@ -236,18 +273,6 @@ export class LineToolTimeAxisLabelView<HorzScaleItem> implements ITimeAxisView {
 		if (this._timeScale.getVisibleLogicalRange() === null) {
 			return;
 		}
-
-		// Use HorzScaleBehavior to get the correct internal object for formatting
-		
-		// Assert the raw timestamp (which is a number) directly to the generic placeholder type (HorzScaleItem).
-		const timeAsHorzScaleItem = point.timestamp as unknown as HorzScaleItem;
-
-		// Convert raw time to the internal LWC object structure needed for full format/coordinate functions.
-		// This ensures we get the *exact* object expected by LWC's internal APIs.
-		const internalHorzItemForFormatting = this._tool.horzScaleBehavior.convertHorzItemToInternal(timeAsHorzScaleItem);
-
-		// Apply Formatting
-		data.text = this._tool.horzScaleBehavior.formatHorzItem(internalHorzItemForFormatting);
 
 		// --- 2. COORDINATE FIX: Get Interpolated Logical Index for Blank Space Plotting ---
 

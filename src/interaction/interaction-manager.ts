@@ -65,12 +65,6 @@ export class InteractionManager<HorzScaleItem> {
 	private _isDrag: boolean = false;
 	private _isShiftKeyDown: boolean = false;
 
-	/** 
-	 * The current magnet strength in pixels. 
-	 * @private 
-	 */
-	private _magnetThreshold: number = 0;	
-
 	/**
 	 * Initializes the Interaction Manager, setting up all internal references and subscribing
 	 * to necessary DOM and Lightweight Charts events.
@@ -104,48 +98,60 @@ export class InteractionManager<HorzScaleItem> {
 	/**
 	 * Converts raw screen coordinates (in pixels) to a logical {@link LineToolPoint} (timestamp/price).
 	 *
-	 * This conversion is robust, handling interpolation to return a time and price value
-	 * even if the screen point is over an area of the chart without a data bar (blank logical space).
+	 * ### The "Truth-First" Tiered Logic
+	 * This method ensures the line tool perfectly tracks the user's mouse:
+	 * 
+	 * 1. **The Witness (Actual Data):** It first uses `getBarAtCoordinate` (an O(1) lookup) to snap 
+	 *    to the exact timestamp of an existing candle. This guarantees alignment with the native crosshair 
+	 *    and flawlessly handles weekend gaps.
+	 * 
+	 * 2. **The Estimator (Interpolation):** If hovering in the "blank space", it relies on the optimized 
+	 *    `interpolateTimeFromLogicalIndex` to linearly project the time forward from the last known candle.
 	 *
 	 * @param screenPoint - The screen coordinates as a {@link Point} object.
 	 * @returns A {@link LineToolPoint} containing a timestamp and price, or `null` if the conversion fails.
-	 *
-	 * @example
-	 * // Used by LineToolsCorePlugin to position the crosshair
-	 * const logicalPoint = manager.screenPointToLineToolPoint(new Point(x, y));
 	 */
 	public screenPointToLineToolPoint(screenPoint: Point): LineToolPoint | null {
 		const timeScale = this._chart.timeScale();
 
-		// --- 1. DETERMINE INPUT Y ---
-		// We prioritize the Shift Key. If Shift is held, we use raw Y because 
-		// the line tools will apply their own geometric constraints (e.g., horizontal lock).
-		// If Shift is NOT held, we pass the Y through the Magnet Engine.
+		// --- 1. DETERMINE INPUT Y (Price) ---
+		// Prioritize Shift Key constraint over the Magnet Engine
 		const targetY = this._isShiftKeyDown 
 			? screenPoint.y 
 			: this._getSnappedY(screenPoint.x, screenPoint.y);
 
 		const price = this._series.coordinateToPrice(targetY as Coordinate);
-
 		const logical = timeScale.coordinateToLogical(screenPoint.x as Coordinate);
 	 
-		if (logical === null) {
+		if (logical === null || price === null) {
 			return null;
 		}
 
-		// Use utility function (which uses interpolation) to get a timestamp from the logical index.
-		const interpolatedTime = interpolateTimeFromLogicalIndex(this._chart, this._series, logical);
+		// --- 2. TIERED TIME LOOKUP ---
+		let finalTime: any = null;
 
-		if (interpolatedTime === null || price === null) {
+		// Tier 1: Look for Actual Data (The Native Truth)
+		const barAtCoordinate = this._plugin.getBarAtCoordinate(screenPoint.x);
+
+		if (barAtCoordinate) {
+			finalTime = barAtCoordinate.time;
+		} else {
+			// Tier 2: Future/Past Estimation
+			finalTime = interpolateTimeFromLogicalIndex(this._chart, this._series, logical);
+		}
+
+		if (finalTime === null) {
 			return null;
 		}
 
-		// Return the final LineToolPoint (timestamp/price).
+		// --- 3. FORMAT AND RETURN ---
 		return {
-			timestamp: this._horzScaleBehavior.key(interpolatedTime as HorzScaleItem) as number,
+			timestamp: this._horzScaleBehavior.key(finalTime as HorzScaleItem) as number,
 			price: price as number,
 		};
 	}
+	
+	
 
 	/**
 	 * Sets the specific tool instance that is currently being drawn interactively by the user.
@@ -274,15 +280,6 @@ export class InteractionManager<HorzScaleItem> {
 		}
 	}
 
-	/**
-	 * Updates the internal magnet threshold used for snapping.
-	 * 
-	 * @param pixels - The threshold distance in pixels.
-	 * @internal
-	 */
-	public setMagnetThreshold(pixels: number): void {
-		this._magnetThreshold = pixels;
-	}	
 
 	/**
 	 * Calculates the "Snapped" Y-coordinate for a given screen point.
@@ -297,15 +294,18 @@ export class InteractionManager<HorzScaleItem> {
 	 */
 	private _getSnappedY(x: number, y: number): number {
 
+		// 1. Identify the tool currently being touched
 		const activeTool = this._draggedTool || this._currentToolCreating;
  
+		// 2. Determine which threshold to use:
+		// Priority 1: The specific tool's override (if it has one > 0)
+		// Priority 2: The global plugin default (via the getter)
 		const toolThreshold = activeTool?.options().magnetThreshold;
 		const effectiveThreshold = (toolThreshold !== undefined && toolThreshold > 0) 
 			? toolThreshold 
-			: this._magnetThreshold;
+			: this._plugin.getMagnetThreshold();
 
-		// 1: Use effectiveThreshold here. 
-		// If the tool has an override, we want to proceed even if the global setting is 0.
+		// 3. Early exit if snapping is disabled globally and locally
 		if (effectiveThreshold <= 0) return y;
 
 		// 2. Identify the bar under the cursor using the plugin's data fetching API.
@@ -1222,7 +1222,7 @@ export class InteractionManager<HorzScaleItem> {
 		// --- Passive Magnet Logic (Browsing & Edit Mode) ---
 		// We remove "!this._draggedTool" so that the crosshair remains 
 		// "glued" to the anchor handle while you are dragging/editing it.
-		if (this._magnetThreshold > 0 && !this._isShiftKeyDown && !this._currentToolCreating) {
+		if (this._plugin.getMagnetThreshold() > 0 && !this._isShiftKeyDown && !this._currentToolCreating) {
 			// FIX: Only override if we are over actual data (params.time exists).
 			// This prevents the vertical line from jumping to the left in the blank space.
 			if (params.point && params.time) {

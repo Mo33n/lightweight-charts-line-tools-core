@@ -148,6 +148,7 @@ function createDummyPluginApi(): ILineToolsPlugin {
 		setCrossHairXY: dummyFn,
 		clearCrossHair: dummyFn,
 		setMagnetThreshold: dummyFn,
+		setTimeFormatter: dummyFn,
 	};
 }
 

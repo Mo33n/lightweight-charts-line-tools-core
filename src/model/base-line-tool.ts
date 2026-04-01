@@ -985,6 +985,18 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 		}
 		return this._horzScaleBehavior;
 	}	
+
+	/**
+	 * Retrieves the reference to the main Core Plugin instance.
+	 * 
+	 * This allows views and sub-components to access global plugin settings 
+	 * like custom formatters or snapping configurations.
+	 * 
+	 * @returns The {@link LineToolsCorePlugin} instance.
+	 */
+	public coreApi(): LineToolsCorePlugin<HorzScaleItem> {
+		return this._coreApi;
+	}
 	
 	// #endregion
 

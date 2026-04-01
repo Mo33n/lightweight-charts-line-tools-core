@@ -392,6 +392,18 @@ export interface ILineToolsApi {
 	 */
 	setMagnetThreshold(pixels: number): void;	
 
+	/**
+	 * Sets a custom time formatter used specifically for line tool axis labels.
+	 * 
+	 * If no custom formatter is set, the plugin will automatically attempt to 
+	 * match the chart's global formatting by checking `localization.timeFormatter`. 
+	 * If that is also unset, it falls back to the standard scale behavior.
+	 * 
+	 * @param formatter - A function that takes a time value and returns a formatted string.
+	 * @returns void
+	 */
+	setTimeFormatter(formatter: (time: any) => string): void;	
+
 }
 
 // #endregion Main Plugin Interface
