@@ -371,17 +371,18 @@ function calculateInfiniteLineClip(
  * The primary culling engine entry point. Determines the precise off-screen state of any tool.
  * 
  * This function routes logic based on the tool's geometry:
- * 1. **Complex Shapes**: Uses `cullingInfo` to check specific sub-segments (e.g., for Polylines).
- * 2. **Single Points**: Performs point-in-AABB checks or specific horizontal/vertical line logic if extensions are active.
- * 3. **Two-Point Tools**: Uses robust geometric clipping (via {@link getCullingStateWithExtensions}) to handle segments, rays, and infinite lines.
- * 4. **General Fallback**: Uses a standard AABB overlap check for other cases.
+ * 1. **Area Check (New)**: Uses 2D AABB intersection for solid shapes and background fills.
+ * 2. **Complex Shapes**: Uses `cullingInfo` to check specific sub-segments.
+ * 3. **Single Points**: Performs point-in-AABB checks or specific line logic.
+ * 4. **Two-Point Tools**: Uses robust parametric clipping for segments and rays.
  *
  * @typeParam HorzScaleItem - The type of the horizontal scale item.
  * @param points - The points defining the tool.
  * @param tool - The tool instance.
  * @param extendOptions - Optional configuration for infinite extensions (Left/Right).
- * @param singlePointOrientation - Optional orientation for single-point infinite lines (Horizontal/Vertical).
- * @param cullingInfo - Optional advanced culling rules (e.g., `subSegments` for multi-segment tools).
+ * @param singlePointOrientation - Optional orientation for single-point infinite lines.
+ * @param cullingInfo - Optional advanced culling rules (sub-segments).
+ * @param isAreaBased - If true, the engine treats the tool as a solid 2D zone (best for fills). Defaults to false.
  * @returns The final {@link OffScreenState} (Visible, or a specific directional miss).
  */
 export function getToolCullingState<HorzScaleItem>(
@@ -389,7 +390,8 @@ export function getToolCullingState<HorzScaleItem>(
 	tool: BaseLineTool<HorzScaleItem>,
 	extendOptions?: ExtendOptions,
 	singlePointOrientation?: SinglePointOrientation,
-	cullingInfo?: LineToolCullingInfo, // <<< NEW PARAMETER
+	cullingInfo?: LineToolCullingInfo,
+	isAreaBased: boolean = false,
 ): OffScreenState {
 	
 	// --- Fast Path: Triage ---
@@ -401,6 +403,43 @@ export function getToolCullingState<HorzScaleItem>(
 	if (!viewportBounds) {
 		return OffScreenState.Visible; // Fail safe if viewport isn't available
 	}
+
+	// --- NEW AREA-BASED LOGIC START ---
+	
+	// If the tool is marked as 'Area-Based', we perform a solid 2D intersection check.
+	// This ensures the tool remains visible if the user is 'inside' the background fill,
+	// even if the lines or anchor points themselves are currently off-screen.
+	if (isAreaBased) {
+		const toolBounds = getToolBoundingBox(points);
+		if (!toolBounds) return OffScreenState.FullyOffScreen;
+
+		// 1. Expand the Tool's Bounding Box to Infinity based on the extend options.
+		// We use native Infinity for perfect mathematical comparison at the CPU level.
+		const toolMinT = (extendOptions?.left) ? -Infinity : toolBounds.minTime;
+		const toolMaxT = (extendOptions?.right) ? Infinity : toolBounds.maxTime;
+
+		// 2. Perform the 4-way AABB Overlap check.
+		// This is the proven method for determining if two rectangles (Viewport vs Tool Zone) intersect.
+		const overlapsTime = viewportBounds.maxTime >= toolMinT && viewportBounds.minTime <= toolMaxT;
+		const overlapsPrice = viewportBounds.maxPrice >= toolBounds.minPrice && viewportBounds.minPrice <= toolBounds.maxPrice;
+
+		// If the viewport overlaps the tool's expanded area, the tool is VISIBLE.
+		if (overlapsTime && overlapsPrice) {
+			return OffScreenState.Visible;
+		}
+
+		// 3. Directional Hint: If no overlap, identify where the tool is relative to the viewport.
+		// We check Price first (Top/Bottom) then Time (Left/Right) for consistency.
+		if (toolBounds.minPrice > viewportBounds.maxPrice) return OffScreenState.OffScreenTop;
+		if (toolBounds.maxPrice < viewportBounds.minPrice) return OffScreenState.OffScreenBottom;
+		if (toolMaxT < viewportBounds.minTime) return OffScreenState.OffScreenLeft;
+		if (toolMinT > viewportBounds.maxTime) return OffScreenState.OffScreenRight;
+
+		return OffScreenState.FullyOffScreen;
+	}
+
+	// --- NEW AREA-BASED LOGIC END ---
+		
 
 	// Determine if general extensions are active
 	const hasExtensions = extendOptions && (extendOptions.left || extendOptions.right); // Retained original logic

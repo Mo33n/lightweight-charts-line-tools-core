@@ -16,7 +16,7 @@ import { ToolRegistry } from '../model/tool-registry';
 import { LineToolPartialOptionsMap, LineToolType, InteractionPhase, HitTestType, HitTestResult, SnapAxis, FinalizationMethod, PaneCursorType } from '../types';
 import { Point, interpolateTimeFromLogicalIndex } from '../utils/geometry';
 import { LineToolPoint } from '../api/public-api';
-import { ensureNotNull } from '../utils/helpers';
+import { ensureNotNull, deepCopy } from '../utils/helpers';
 
 
 /**
@@ -467,7 +467,10 @@ export class InteractionManager<HorzScaleItem> {
 			// we must capture ALL permanent points for a full path translation.
 			if (this._draggedTool.pointsCount === -1) {
 				// Captures the full path for translation
-				allOriginalPoints = this._draggedTool.getPermanentPointsForTranslation();
+				//allOriginalPoints = this._draggedTool.getPermanentPointsForTranslation();
+
+				// FIX: Take a snapshot to prevent the reference leak
+				allOriginalPoints = deepCopy(this._draggedTool.getPermanentPointsForTranslation());
 
 				// CRITICAL: We must clear the draggedPointIndex if the hit was on the center anchor
 				// to ensure _handleMouseMove enters the correct Translate logic.
@@ -490,7 +493,10 @@ export class InteractionManager<HorzScaleItem> {
 				const originalPointsArray: (LineToolPoint | null)[] = [];
 				for (let i = 0; i <= maxAnchorIndex; i++) {
 					// Calls tool.getPoint(i), which calculates virtual points for indices > 1
-					originalPointsArray.push(hitResult.tool.getPoint(i)); 
+					//originalPointsArray.push(hitResult.tool.getPoint(i));
+					// FIX: Take a snapshot to prevent the reference leak
+					const p = hitResult.tool.getPoint(i);
+					originalPointsArray.push(p ? deepCopy(p) : null);
 				}
 				
 				// Filter out nulls and store the collected points

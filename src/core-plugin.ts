@@ -175,7 +175,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
 			// Update existing tool
 			existingTool.setPoints(points);
 			existingTool.applyOptions(options);
-			console.log(`Updated line tool with ID: ${id}`);
+			//console.log(`Updated line tool with ID: ${id}`);
 		} else {
 			// Create new tool with specified ID
 			try {
