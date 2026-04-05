@@ -130,6 +130,13 @@ export abstract class LineToolPaneView<HorzScaleItem> implements IUpdatablePaneV
      * @returns The {@link IPaneRenderer} to be drawn, or `null` if nothing should be rendered.
      */
     public renderer(): IPaneRenderer | null {
+
+        // DEFENSIVE: Access the parent tool's destruction state. 
+		// We use a cast here because the property is private/protected on the Base class.
+		if ((this._tool as any)._isDestroying) {
+			return null;
+		}
+
         if (this._invalidated) {
             const chartElement = this._chart.chartElement();
             const height = chartElement.clientHeight;

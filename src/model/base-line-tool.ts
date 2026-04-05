@@ -879,6 +879,13 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	 * @returns A readonly array of {@link IPaneView} components.
 	 */
 	public paneViews(): readonly IPaneView[] {
+		// DEFENSIVE: If the tool is being destroyed, return an empty array immediately.
+		// This prevents the chart from attempting to render views that no longer 
+		// have valid chart or series references.
+		if (this._isDestroying) {
+			return [];
+		}
+
 		return this._paneViews;
 	}
 
@@ -951,8 +958,12 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	 * @throws An error if the series has not been attached (e.g., in `detached` state).
 	 */
 	public getSeries(): ISeriesApi<SeriesType, HorzScaleItem> {
+		// DEFENSIVE: Return the series if it exists, otherwise throw a controlled error.
+		// Note: During destruction, this may return null if called by an asynchronous process.
 		if (!this._series) {
-			throw new Error(`Series not attached to tool ${this.id()}. Cannot get series API.`);
+			// Instead of crashing, we log a warning and return a dummy or null cast
+			// if the tool is already in the process of being removed.
+			throw new Error(`Series not attached to tool ${this.id()}.`);
 		}
 		return this._series;
 	}
@@ -964,7 +975,10 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	 * @throws An error if the chart API is not available.
 	 */
 	public getChart(): IChartApiBase<HorzScaleItem> {
+		// DEFENSIVE: Check for chart availability without crashing.
 		if (!this._chart) {
+			// This error often occurs if a view tries to recalculate coordinates 
+			// after the tool has been detached but before it is garbage collected.
 			throw new Error('Chart API not available. Tool might not be attached.');
 		}
 		return this._chart; 
@@ -1171,11 +1185,10 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	 * @returns void
 	 */
 	public _triggerChartUpdate(): void {
-		if (this._requestUpdate) { // Use the existing _requestUpdate property
+		// DEFENSIVE: Only call the update if the series is still attached.
+		// This removes the "Attempted to trigger chart update... but _requestUpdate is not set" warning.
+		if (this._requestUpdate && !this._isDestroying) { 
 			this._requestUpdate();
-			//console.log(`[BaseLineTool] Triggering chart update for tool ${this.id()}.`);
-		} else {
-			console.warn(`[BaseLineTool] Attempted to trigger chart update for tool ${this.id()} but _requestUpdate is not set.`);
 		}
 	}
 

@@ -87,85 +87,93 @@ export function getViewportBounds<HorzScaleItem>(
 	tool: BaseLineTool<HorzScaleItem>
 ): ToolBoundingBox | null {
 
-	const chart = tool.getChart();
-	const series = tool.getSeries();
-	const timeScale = chart.timeScale();
+	// DEFENSIVE: Check if the tool is already being destroyed or detached.
+	// If getChart() would fail, we exit immediately.
+	try {
+		const chart = tool.getChart();
+		const series = tool.getSeries();
+		const timeScale = chart.timeScale();
 
-	// 1. Get Extended Price Range
-	const priceRangeResult = getExtendedVisiblePriceRange(tool);
+		// 1. Get Extended Price Range
+		const priceRangeResult = getExtendedVisiblePriceRange(tool);
 
-	if (!priceRangeResult || priceRangeResult.from === null || priceRangeResult.to === null) {
+		if (!priceRangeResult || priceRangeResult.from === null || priceRangeResult.to === null) {
+			return null;
+		}
+
+		//console.groupCollapsed('%c[VIEWPORT DEBUG] Start getViewportBounds (Forced Interpolation Fix)', 'color: #32CD32; font-weight: bold;');
+
+
+		const logicalRange = timeScale.getVisibleLogicalRange();
+		if (!logicalRange) {
+			//console.log("Logical Range is null. Exiting.");
+			//console.groupEnd();
+			return null;
+		}
+
+		//console.log(`Initial Logical Range: [${logicalRange.from.toFixed(2)}, ${logicalRange.to.toFixed(2)}]`);
+
+
+		// BUFFER: Widen by 1 logical unit each side for anti-edge-cull buffer
+		const BUFFER = 1;
+
+		const leftLogical = (logicalRange.from - BUFFER) as Logical;
+		const rightLogical = (logicalRange.to + BUFFER) as Logical;
+
+		//console.log(`Buffered Logical Range (Target Indices): [${leftLogical.toFixed(2)}, ${rightLogical.toFixed(2)}]`);
+
+
+		// --- Time Bounds Calculation: FORCED INTERPOLATION FIX ---
+		// Problem: coordinateToTime caps the MaxTime value in the blank space.
+		// Fix: Rely on interpolateTimeFromLogicalIndex for continuity across the blank space.
+		const rawMinTime = interpolateTimeFromLogicalIndex(chart, series, leftLogical);
+		const rawMaxTime = interpolateTimeFromLogicalIndex(chart, series, rightLogical);
+
+		//console.log(`%cInterpolation Raw Results: MinTime=${rawMinTime} | MaxTime=${rawMaxTime}`, 'color: #FF8C00; font-weight: bold;');
+
+
+		if (rawMinTime === null || rawMaxTime === null) {
+			//console.log("Interpolation returned null for one or both sides. Exiting.");
+			//console.groupEnd();
+			return null;
+		}
+
+		const minTimeNum = Number(rawMinTime);
+		const maxTimeNum = Number(rawMaxTime);
+
+		// Apply rounding for integer consistency (narrower viewport)
+		let minTime = Math.ceil(minTimeNum);
+		let maxTime = Math.floor(maxTimeNum);
+		
+		//console.log(`Initial Final Time (Rounded): [${minTime}, ${maxTime}]`);
+
+
+		// Degeneracy Check (Ensure a valid time range of at least 1 unit)
+		if (minTime >= maxTime) {
+			//console.log(`%cDegeneracy Detected (minTime >= maxTime). Adjusting maxTime.`, 'color: #FF4500;');
+			maxTime = minTime + 1;
+		}
+
+
+		// --- Price Bounds Calculation (Remains Unchanged) ---
+		const minPriceRaw = Math.min(priceRangeResult.from, priceRangeResult.to);
+		const maxPriceRaw = Math.max(priceRangeResult.from, priceRangeResult.to);
+
+		const viewportBounds = {
+			minTime: minTime as number, 
+			maxTime: maxTime as number,
+			minPrice: minPriceRaw as number,
+			maxPrice: maxPriceRaw as number,
+		};
+
+		//console.log(`%cFINAL VIEWPORT BOUNDS: MinTime=${viewportBounds.minTime}, MaxTime=${viewportBounds.maxTime}`, 'color: #3CB371; font-weight: bold;');
+		//console.groupEnd();
+		return viewportBounds;
+	} catch (e) {
+		// If the chart or series is missing, we cannot calculate viewport bounds.
+		// Returning null tells the culling engine to skip the check for this tool.
 		return null;
 	}
-
-    //console.groupCollapsed('%c[VIEWPORT DEBUG] Start getViewportBounds (Forced Interpolation Fix)', 'color: #32CD32; font-weight: bold;');
-
-
-	const logicalRange = timeScale.getVisibleLogicalRange();
-	if (!logicalRange) {
-        //console.log("Logical Range is null. Exiting.");
-        //console.groupEnd();
-		return null;
-	}
-
-    //console.log(`Initial Logical Range: [${logicalRange.from.toFixed(2)}, ${logicalRange.to.toFixed(2)}]`);
-
-
-	// BUFFER: Widen by 1 logical unit each side for anti-edge-cull buffer
-	const BUFFER = 1;
-
-	const leftLogical = (logicalRange.from - BUFFER) as Logical;
-	const rightLogical = (logicalRange.to + BUFFER) as Logical;
-
-    //console.log(`Buffered Logical Range (Target Indices): [${leftLogical.toFixed(2)}, ${rightLogical.toFixed(2)}]`);
-
-
-    // --- Time Bounds Calculation: FORCED INTERPOLATION FIX ---
-    // Problem: coordinateToTime caps the MaxTime value in the blank space.
-    // Fix: Rely on interpolateTimeFromLogicalIndex for continuity across the blank space.
-    const rawMinTime = interpolateTimeFromLogicalIndex(chart, series, leftLogical);
-    const rawMaxTime = interpolateTimeFromLogicalIndex(chart, series, rightLogical);
-
-    //console.log(`%cInterpolation Raw Results: MinTime=${rawMinTime} | MaxTime=${rawMaxTime}`, 'color: #FF8C00; font-weight: bold;');
-
-
-    if (rawMinTime === null || rawMaxTime === null) {
-        //console.log("Interpolation returned null for one or both sides. Exiting.");
-        //console.groupEnd();
-        return null;
-    }
-
-    const minTimeNum = Number(rawMinTime);
-    const maxTimeNum = Number(rawMaxTime);
-
-    // Apply rounding for integer consistency (narrower viewport)
-    let minTime = Math.ceil(minTimeNum);
-    let maxTime = Math.floor(maxTimeNum);
-    
-    //console.log(`Initial Final Time (Rounded): [${minTime}, ${maxTime}]`);
-
-
-    // Degeneracy Check (Ensure a valid time range of at least 1 unit)
-    if (minTime >= maxTime) {
-        //console.log(`%cDegeneracy Detected (minTime >= maxTime). Adjusting maxTime.`, 'color: #FF4500;');
-        maxTime = minTime + 1;
-    }
-
-
-    // --- Price Bounds Calculation (Remains Unchanged) ---
-	const minPriceRaw = Math.min(priceRangeResult.from, priceRangeResult.to);
-	const maxPriceRaw = Math.max(priceRangeResult.from, priceRangeResult.to);
-
-	const viewportBounds = {
-		minTime: minTime as number, 
-		maxTime: maxTime as number,
-		minPrice: minPriceRaw as number,
-		maxPrice: maxPriceRaw as number,
-	};
-
-    //console.log(`%cFINAL VIEWPORT BOUNDS: MinTime=${viewportBounds.minTime}, MaxTime=${viewportBounds.maxTime}`, 'color: #3CB371; font-weight: bold;');
-    //console.groupEnd();
-	return viewportBounds;
 }
 
 // #endregion Universal Bounding Box Calculators
