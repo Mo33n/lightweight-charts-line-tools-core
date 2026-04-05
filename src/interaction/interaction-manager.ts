@@ -1084,12 +1084,20 @@ export class InteractionManager<HorzScaleItem> {
 	 *
 	 * @private
 	 */
+	/*
 	private _resetCreationGestureStateOnly(): void {
 		this._isDrag = false;
 		this._mouseDownPoint = null;
 		this._mouseDownTime = 0;
 		this._isCreationGesture = false;
 		// IMPORTANT: Does NOT touch _currentToolCreating or _activeTool
+	}
+	*/
+	private _resetCreationGestureStateOnly(): void {
+		this._isCreationGesture = false;
+		
+		// FIX: Wipe out the drag flags so external clicks don't trigger phantom deselects
+		this._resetCommonGestureState();
 	}
 
 	/**
@@ -1100,6 +1108,7 @@ export class InteractionManager<HorzScaleItem> {
 	 *
 	 * @private
 	 */
+	/*
 	private _resetEditingGestureStateOnly(): void {
 		
 		// Clear Override
@@ -1117,6 +1126,29 @@ export class InteractionManager<HorzScaleItem> {
 		this._originalDragPoints = null;
 		this._chart.applyOptions({ handleScroll: { pressedMouseMove: true } });
 	}
+	*/
+
+	private _resetEditingGestureStateOnly(): void {
+		
+		// Clear Override
+        // Important: Clear the override BEFORE nulling _draggedTool
+		if (this._draggedTool) {
+			this._draggedTool.setOverrideCursor(null);
+		}
+		// Clear the stored cursor state so the next click starts fresh
+        this._activeDragCursor = null;
+		
+		this._isEditing = false;
+		this._draggedTool = null;
+		this._draggedPointIndex = null;
+		this._dragStartPoint = null;
+		this._originalDragPoints = null;
+		this._chart.applyOptions({ handleScroll: { pressedMouseMove: true } });
+
+		// FIX: Wipe out the drag flags so the next click on a React button 
+		// isn't interpreted as the end of a chart drag.
+		this._resetCommonGestureState();
+	}	
 
 	/**
 	 * Clears the most fundamental mouse gesture state variables: drag flag, mouse down point, and time.
@@ -1390,9 +1422,9 @@ export class InteractionManager<HorzScaleItem> {
 	 * @returns void
 	 */
 	public deselectAllTools(): void { // MODIFIED: Made public with a clear name
-		//console.log('inside deselectAll for CorePlugin call')
+		//console.log('inside deselectAllTools')
 		if (this._selectedTool) {
-			//console.log('inside selectedTool')
+			//console.log('setSelected flase in if (this._selectedTool)')
 			this._selectedTool.setSelected(false);
 			this._selectedTool = null;
 			this._plugin.requestUpdate();
