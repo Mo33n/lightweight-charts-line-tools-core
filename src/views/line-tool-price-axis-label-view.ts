@@ -84,27 +84,28 @@ export class LineToolPriceAxisLabelView<HorzScaleItem> extends PriceAxisView imp
     }    
 
 	/**
-     * The core logic for updating the renderer's state.
-     * 
-     * This overrides the abstract method from {@link PriceAxisView}. It performs several critical tasks:
-     * 1. **Validity Check:** Verifies if the tool and point are valid; if not, unregisters the label from the stacking manager.
-     * 2. **Registration:** Registers (or updates) the label with the {@link PriceAxisLabelStackingManager}, providing current height and position data.
-     * 3. **Formatting:** Formats the price value into a string using the series' formatter.
-     * 4. **Styling:** Applies high-contrast colors (using {@link generateContrastColors}) based on the tool's configuration.
-     * 5. **Coordinate Sync:** Ensures the renderer uses the `fixedCoordinate` (if set) or the natural price coordinate.
-     * 
-     * @param axisRendererData - The data object for the main axis label.
-     * @param paneRendererData - The data object for any pane-side rendering (unused here).
-     * @param commonData - Shared data (coordinates, colors) between axis and pane renderers.
-     */
+	 * The core logic for updating the renderer's state.
+	 * 
+	 * This method performs the following tasks:
+	 * 1. Validates the existence of logical points and API references.
+	 * 2. Determines interaction-based visibility (excluding hover states).
+	 * 3. Registers the label with the PriceAxisLabelStackingManager for collision resolution.
+	 * 4. Configures the final renderer data with high-contrast colors and formatted price strings.
+	 * 
+	 * @param axisRendererData - The data object for the main axis label.
+	 * @param paneRendererData - The data object for any pane-side rendering (unused).
+	 * @param commonData - Shared data (coordinates, colors) between axis and pane renderers.
+	 */
 	protected _updateRendererData(
 		axisRendererData: PriceAxisViewRendererData,
 		paneRendererData: PriceAxisViewRendererData,
 		commonData: PriceAxisViewRendererCommonData
 	): void {
-		// Set fixed coordinate (from manager) at the very start
+		// Apply the shifted coordinate from the Stacking Manager if it exists.
+		// This must be set first to ensure the renderer uses the collision-free Y position.
 		commonData.fixedCoordinate = this._fixedCoordinate;
 
+		// Initialize default visibility to false.
 		axisRendererData.visible = false;
 		paneRendererData.visible = false;
 
@@ -114,12 +115,10 @@ export class LineToolPriceAxisLabelView<HorzScaleItem> extends PriceAxisView imp
 		const point = this._tool.getPoint(this._pointIndex);
 		const labelId = this._tool.id() + '-p' + this._pointIndex;
 
-		/**
-		 * CULLING CHECK
-		 * If the parent tool determines it is off-screen, we must hide the label
-		 * and ensure it is removed from the stacking manager to prevent it from
-		 * pushing other visible labels out of place.
-		 */
+		// --- 1. CULLING CHECK ---
+		// If the parent tool determines it is off-screen, we must hide the label
+		// and ensure it is removed from the stacking manager to prevent it from
+		// pushing other visible labels out of place.
 		if (this._tool.isCulled()) {
 			if (this._isRegistered) {
 				this._priceAxisLabelStackingManager.unregisterLabel(labelId);
@@ -129,13 +128,21 @@ export class LineToolPriceAxisLabelView<HorzScaleItem> extends PriceAxisView imp
 			return;
 		}
 
-		// 1. Calculate the tool's current interaction state
-		const isToolActive = this._tool.isSelected() || this._tool.isHovered() || this._tool.isEditing() || this._tool.isCreating();
+		// --- 2. INTERACTION STATE CALCULATION ---
+		// We define the tool as "Active" if it is Selected, being Edited (anchor drag), 
+		// or currently being Created. 
+		// 
+		// FIX: We explicitly EXCLUDE this._tool.isHovered() here to prevent labels 
+		// from appearing merely because the mouse is over the tool.
+		const isToolActive = this._tool.isSelected() || this._tool.isEditing() || this._tool.isCreating();
 		
-		// 2. Determine if the label should be visually active based on options
+		// Determine if the label should be visually active based on the tool's 
+		// internal active state and the user's "Always Visible" preference.
 		const isLabelVisuallyActive = toolOptions.priceAxisLabelAlwaysVisible || isToolActive;
 
-		// Determine if the label is structurally valid (Prerequisite for stacking registration)
+		// Determine if the label is structurally valid.
+		// It must be visible, labels must be enabled, it must have a point, 
+		// and the Price Scale must be available.
 		const isStructurallyValid = 
 			toolOptions.visible &&
 			toolOptions.showPriceAxisLabels &&
@@ -145,7 +152,7 @@ export class LineToolPriceAxisLabelView<HorzScaleItem> extends PriceAxisView imp
 			priceScaleApi &&
 			series;
 
-		// --- 1. HANDLE UNREGISTER/CLEAR (If Structure Fails) ---
+		// --- 3. HANDLE UNREGISTER/CLEAR ---
 		if (!isStructurallyValid) {
 			if (this._isRegistered) {
 				this._priceAxisLabelStackingManager.unregisterLabel(labelId);
@@ -155,23 +162,22 @@ export class LineToolPriceAxisLabelView<HorzScaleItem> extends PriceAxisView imp
 			return;
 		}
 
-		// --- 2. CALCULATE DATA & HEIGHT (Runs only if structurally valid) ---
+		// --- 4. CALCULATE DATA & HEIGHT ---
+		// Registration with the stacking manager requires the label's target coordinate 
+		// and its physical height.
 		
 		const backgroundColor = this._tool.priceAxisLabelColor();
-		
-		// The manager needs the coordinate regardless of the color being null, but LWC views should be clean.
 		commonData.coordinate = series.priceToCoordinate(point!.price) as Coordinate;
 
-		// Height calculation remains complex, relying on temporary setup:
 		const layoutOptions = this._chart.options().layout;
 		const priceScaleOptions = priceScaleApi!.options();
 		
+		// Construct options for height measurement.
 		const currentRendererOptions: PriceAxisViewRendererOptions = {
 			font: `${layoutOptions.fontSize}px ${layoutOptions.fontFamily}`,
 			fontFamily: layoutOptions.fontFamily,
 			color: layoutOptions.textColor,
 			fontSize: layoutOptions.fontSize,
-			// Approximate/Default internal padding and sizing from V3.8's PriceAxisRendererOptionsProvider defaults
 			baselineOffset: Math.round(layoutOptions.fontSize / 10),
 			borderSize: priceScaleOptions.borderVisible ? 1 : 0,
 			paddingBottom: Math.floor(layoutOptions.fontSize / 3.5),
@@ -183,44 +189,41 @@ export class LineToolPriceAxisLabelView<HorzScaleItem> extends PriceAxisView imp
 		
 		let labelHeight = 16;
 		try {
+			// Create a temporary renderer to measure the exact height of the label box.
 			const textToMeasure = series.priceFormatter().format(point!.price) || '0';
 			const tempRendererData: PriceAxisViewRendererData = { text: textToMeasure, visible: true, tickVisible: false } as any;
 			const tempCommonData: PriceAxisViewRendererCommonData = { coordinate: 0 as Coordinate, background: 'black', color: 'white' } as any;
 			const tempRenderer = new PriceAxisViewRenderer(tempRendererData, tempCommonData);
 			labelHeight = tempRenderer.height(currentRendererOptions, false);
 		} catch (e) {
-			// fallback
+			// Fallback to a default height if measurement fails.
 		}
 
-		// --- 3. REGISTER/UPDATE with Stacking Manager (Upsert) ---
-		
+		// --- 5. REGISTER/UPDATE WITH STACKING MANAGER ---
+		// We register the label with the manager to detect and resolve vertical collisions.
 		this._priceAxisLabelStackingManager.registerLabel({
 			id: labelId,
 			toolId: this._tool.id(),
 			originalCoordinate: commonData.coordinate as Coordinate,
 			height: labelHeight,
 			setFixedCoordinate: (coord: Coordinate | undefined) => this.setFixedCoordinateFromManager(coord),
-			isVisible: () => true, // We are structurally valid, so we are visible to the manager
+			isVisible: () => true, // Already checked structural validity
 		});
 
 		this._isRegistered = true;
 
-		// --- 4. FINAL RENDERER DATA SETUP (Drawing Properties) ---
-
-		// Only set drawing properties if the label is interactionally visible (color is supplied)
+		// --- 6. FINAL RENDERER SETUP ---
+		// If a valid background color is provided, configure the renderer to draw.
 		if (backgroundColor !== null) {
 			const colors = generateContrastColors(backgroundColor);
 			commonData.background = colors.background;
 			commonData.color = colors.foreground;
 			axisRendererData.text = series.priceFormatter().format(point!.price);
 			axisRendererData.borderColor = colors.background;
-			axisRendererData.visible = true; // Make label draw
+			axisRendererData.visible = true; 
 		} else {
-			// If visually inactive, ensure data sent to renderer is clean
 			axisRendererData.visible = false;
 		}
-		
-		// The fixed coordinate is already set by the manager's logic. We trust the coordinate() getter to return it.
 	}
 
 }
