@@ -63,26 +63,61 @@ export function clearRectWithGradient(ctx: CanvasRenderingContext2D, x: number, 
 
 // #region Line Styles and Drawing (adapted from V3.8 renderers/draw-line.ts)
 
+
 /**
- * Calculates the specific line dash array pattern for a given `LineStyle`.
+ * Calculates the specific line dash array pattern for a given LineStyle.
  * 
- * This helper maps abstract style enums (like `LineStyle.Dashed` or `LineStyle.SparseDotted`)
- * into the concrete numerical arrays required by the HTML5 Canvas API's `setLineDash`.
- * The pattern is scaled relative to the current line width of the context to ensure visual consistency.
- *
- * @param ctx - The canvas rendering context (used to retrieve the current `lineWidth`).
- * @param style - The `LineStyle` enum value to convert.
- * @returns An array of numbers representing the dash pattern (segments and gaps), or an empty array for solid lines.
+ * This version implements high-contrast ratios for 1px lines to ensure 
+ * Dotted and Dashed styles are visually distinct, while maintaining 
+ * thickness-awareness for all other widths and cap styles.
  */
-export function computeDashPattern(ctx: CanvasRenderingContext2D, style: LineStyle): number[] {
-	switch (style) {
-		case LineStyle.Solid: return [];
-		case LineStyle.Dotted: return [ctx.lineWidth, ctx.lineWidth];
-		case LineStyle.Dashed: return [2 * ctx.lineWidth, 2 * ctx.lineWidth];
-		case LineStyle.LargeDashed: return [6 * ctx.lineWidth, 6 * ctx.lineWidth];
-		case LineStyle.SparseDotted: return [ctx.lineWidth, 4 * ctx.lineWidth];
-		default: return [];
+export function computeDashPattern(ctx: CanvasRenderingContext2D, style: LineStyle | number): number[] {
+	const width = ctx.lineWidth;
+	
+	// --- CAP COMPENSATION ---
+	const isCapped = ctx.lineCap !== 'butt';
+	const capExtra = isCapped ? width : 0;
+
+	// We calculate the raw dash and gap before applying cap compensation.
+	let dash: number;
+	let gap: number;
+
+	switch (style as number) {
+		case 1: // LineStyle.Dotted
+			// 1px: [1, 2] ratio makes it feel like sharp points.
+			// 2px+: [width, width] ratio creates perfect squares/circles.
+			dash = width === 1 ? 1 : width;
+			gap = width === 1 ? 2 : width;
+			break;
+		
+		case 2: // LineStyle.Dashed
+			// 1px: [4, 3] ratio makes it feel like an actual line segment.
+			// 2px+: [2*width, 2*width] standard ratio.
+			dash = width === 1 ? 4 : 2 * width;
+			gap = width === 1 ? 3 : 2 * width;
+			break;
+		
+		case 3: // LineStyle.LargeDashed
+			// 1px: [8, 4] ratio for clear elongation.
+			dash = width === 1 ? 8 : 6 * width;
+			gap = width === 1 ? 4 : 6 * width;
+			break;
+		
+		case 4: // LineStyle.SparseDotted
+			// 1px: [1, 8] ratio for significant white space.
+			dash = width === 1 ? 1 : width;
+			gap = width === 1 ? 8 : 4 * width;
+			break;
+
+		case 0: // LineStyle.Solid
+		default: 
+			return [];
 	}
+
+	// Final Step: Adjust the pattern to account for 'round' or 'square' caps.
+	// We subtract the overhang from the dash and add it to the gap to 
+	// preserve the physical spacing the eye perceives.
+	return [Math.max(0.1, dash - capExtra), gap + capExtra];
 }
 
 /**

@@ -1260,6 +1260,7 @@ export class InteractionManager<HorzScaleItem> {
 		// --- Passive Magnet Logic (Browsing & Edit Mode) ---
 		// We remove "!this._draggedTool" so that the crosshair remains 
 		// "glued" to the anchor handle while you are dragging/editing it.
+
 		if (this._plugin.getMagnetThreshold() > 0 && !this._isShiftKeyDown && !this._currentToolCreating) {
 			// FIX: Only override if we are over actual data (params.time exists).
 			// This prevents the vertical line from jumping to the left in the blank space.
