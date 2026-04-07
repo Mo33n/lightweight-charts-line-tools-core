@@ -1308,7 +1308,20 @@ export interface LineToolHitTestData {
 	suggestedCursor?: PaneCursorType;
 }
 
-
+/**
+ * Represents the visual state of the supplemental crosshair label.
+ * 
+ * This is used internally by the Core Plugin to manage the hand-off 
+ * between the native chart label and our injected one.
+ */
+export interface CrosshairLabelState {
+	/** The formatted time string (e.g., "2023-05-01 14:30"). */
+	text: string;
+	/** The pixel X-coordinate on the time axis. */
+	coordinate: Coordinate;
+	/** Whether the supplemental label should be drawn. */
+	visible: boolean;
+}
 
 /**
  * Advanced configuration for the Culling Engine (Viewability Check).

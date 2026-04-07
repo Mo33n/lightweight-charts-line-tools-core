@@ -61,6 +61,9 @@ export class TimeAxisViewRenderer implements ITimeAxisViewRenderer {
 			return;
 		}
 
+		// --- DEBUG: Canvas Draw ---
+		//console.log(`[CrosshairDebug] RENDERER DRAWING NOW: ${this._data.text} at ${this._data.coordinate}`);
+
 		target.useMediaCoordinateSpace(({ context: ctx, mediaSize }: MediaCoordinatesRenderingScope) => {
 			// In media space, pixelRatio is typically 1.0 (CSS pixels = device pixels)
 			// for drawing directly, but if derived values need re-scaling:

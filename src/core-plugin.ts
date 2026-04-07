@@ -1,6 +1,20 @@
 // /src/core-plugin.ts
 
-import { IChartApiBase, ISeriesApi, SeriesType, IHorzScaleBehavior, IPaneApi, Coordinate, Time, BusinessDay, UTCTimestamp } from 'lightweight-charts';
+import {
+	IChartApiBase,
+	ISeriesApi,
+	SeriesType,
+	IHorzScaleBehavior,
+	IPaneApi,
+	Coordinate,
+	Time,
+	BusinessDay,
+	UTCTimestamp,
+	ISeriesPrimitive,
+	SeriesAttachedParameter,
+	PrimitiveHoveredItem
+} from 'lightweight-charts';
+
 import {
 	ILineToolsApi,
 	LineToolExport,
@@ -8,15 +22,16 @@ import {
 	LineToolsAfterEditEventHandler,
 	LineToolsDoubleClickEventHandler,
 	LineToolsDoubleClickEventParams,
-	LineToolsAfterEditEventParams
+	LineToolsAfterEditEventParams,
 } from './api/public-api';
 import { Delegate } from './utils/helpers';
-import { LineToolPartialOptionsMap, LineToolType, IChartWidgetBase } from './types';
+import { LineToolPartialOptionsMap, LineToolType, IChartWidgetBase, ITimeAxisView, IPriceAxisView, IPaneView  } from './types';
 import { BaseLineTool } from './model/base-line-tool';
 import { ToolRegistry } from './model/tool-registry';
 import { InteractionManager } from './interaction/interaction-manager';
 import { Point } from './utils/geometry';
 import { PriceAxisLabelStackingManager } from './model/price-axis-label-stacking-manager';
+import { CrosshairTimeAxisLabelView } from './views/crosshair-time-axis-label-view';
 
 /**
  * The main implementation of the Line Tools Core Plugin.
@@ -30,7 +45,7 @@ import { PriceAxisLabelStackingManager } from './model/price-axis-label-stacking
  *
  * @typeParam HorzScaleItem - The type of the horizontal scale item (e.g., `Time`, `UTCTimestamp`, or `number`), matching the chart's configuration.
  */
-export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
+export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISeriesPrimitive<HorzScaleItem> {
 	private readonly _chart: IChartApiBase<HorzScaleItem>;
 	private readonly _series: ISeriesApi<SeriesType, HorzScaleItem>;
 	private readonly _horzScaleBehavior: IHorzScaleBehavior<HorzScaleItem>;
@@ -39,6 +54,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
 	private readonly _toolRegistry: ToolRegistry<HorzScaleItem>;
 	private readonly _interactionManager: InteractionManager<HorzScaleItem>;
 	private readonly _priceAxisLabelStackingManager: PriceAxisLabelStackingManager<HorzScaleItem>;
+	private readonly _crosshairTimeView: CrosshairTimeAxisLabelView<HorzScaleItem>;
 
 	/**
 	 * Optional user-provided function for formatting time axis labels.
@@ -72,6 +88,12 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
 		this._toolRegistry = new ToolRegistry<HorzScaleItem>();
 		this._interactionManager = new InteractionManager<HorzScaleItem>(this, this._chart, this._series, this._tools, this._toolRegistry);
 		this._priceAxisLabelStackingManager = new PriceAxisLabelStackingManager<HorzScaleItem>(this._chart, this._series);
+
+		// Initialize the supplemental crosshair view
+		this._crosshairTimeView = new CrosshairTimeAxisLabelView<HorzScaleItem>(this._chart);
+
+		// Attach the plugin itself to the series as a primitive so its views are rendered
+		this._series.attachPrimitive(this);
 
 		console.log('Line Tools Core Plugin initialized.');
 	}
@@ -637,6 +659,8 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
 		}
 	}
 
+
+
     /**
 	 * Clears the chart's crosshair, making it invisible.
 	 *
@@ -645,9 +669,32 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
 	 *
 	 * @returns void
 	 */
+	/*
     public clearCrossHair(): void {
         this._chart.clearCrosshairPosition();
     }
+	*/
+
+    public clearCrossHair(): void {
+        this._chart.clearCrosshairPosition();
+		// Ensure our supplemental label is reset and hidden
+		this._crosshairTimeView.updateState('', 0 as Coordinate, false);
+    }
+	
+	/**
+	 * Updates the state of the supplemental crosshair time axis label.
+	 * 
+	 * This is used internally by the InteractionManager to draw the crosshair 
+	 * label in the "blank space" where Lightweight Charts natively hides it.
+	 * 
+	 * @param text - The formatted time string.
+	 * @param x - The X coordinate in pixels.
+	 * @param visible - Whether the supplemental label should be shown.
+	 * @internal
+	 */
+	public updateCrosshairTimeLabel(text: string, x: Coordinate, visible: boolean): void {
+		this._crosshairTimeView.updateState(text, x, visible);
+	}
 
 	/**
 	 * Sets the magnet threshold in pixels for snapping to price data.
@@ -753,6 +800,65 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi {
 	public getPriceAxisLabelStackingManager(): PriceAxisLabelStackingManager<HorzScaleItem> {
 		return this._priceAxisLabelStackingManager;
 	}
+
+	/**
+	 * Implementation of ISeriesPrimitive. Returns the views for the time axis.
+	 */
+	public timeAxisViews(): readonly ITimeAxisView[] {
+		// Only return the view if the chart is visible
+		//console.log(`[CrosshairDebug] LWC requested timeAxisViews. View Visible: ${this._crosshairTimeView.visible()}`);
+		return [this._crosshairTimeView];
+	}
+
+    /**
+	 * Optional Z-Order implementation for the plugin primitive.
+	 * This ensures our injected crosshair label stays on the topmost layer.
+	 */
+	public zOrder(): 'top' | 'normal' | 'bottom' {
+		return 'top';
+	}
+
+	/**
+	 * Implementation of ISeriesPrimitive. We don't render anything on the price axis for the core itself.
+	 */
+	public priceAxisViews(): readonly IPriceAxisView[] {
+		return [];
+	}
+
+	/**
+	 * Implementation of ISeriesPrimitive. We don't render anything on the main pane.
+	 */
+	public paneViews(): readonly IPaneView[] {
+		return [];
+	}
+
+	/**
+	 * Implementation of ISeriesPrimitive. The core itself does not capture mouse hits.
+	 */
+	public hitTest(): PrimitiveHoveredItem | null {
+		return null;
+	}
+
+	/**
+	 * Implementation of ISeriesPrimitive. Triggers when attached to a series.
+	 */
+	public attached(param: SeriesAttachedParameter<HorzScaleItem>): void {
+		// Logic handled in constructor, but interface requires implementation
+	}
+
+	/**
+	 * Implementation of ISeriesPrimitive. Triggers when detached.
+	 */
+	public detached(): void {
+		// Logic handled in constructor, but interface requires implementation
+	}
+
+	/**
+	 * Implementation of ISeriesPrimitive. Signals that views need updating.
+	 */
+	public updateAllViews(): void {
+		this._crosshairTimeView.update();
+	}	
 
 	/**
 	 * Internal factory method to instantiate and register a new tool.

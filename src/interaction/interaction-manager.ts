@@ -150,8 +150,7 @@ export class InteractionManager<HorzScaleItem> {
 			price: price as number,
 		};
 	}
-	
-	
+
 
 	/**
 	 * Sets the specific tool instance that is currently being drawn interactively by the user.
@@ -1269,6 +1268,53 @@ export class InteractionManager<HorzScaleItem> {
 			}
 		}
 
+		// --- Supplemental Crosshair Label Logic (Blank Space) ---
+		if (params.point && !params.time) {
+			// Mouse is in the extrapolated blank space (future/past)
+			const logical = this._chart.timeScale().coordinateToLogical(params.point.x as Coordinate);
+ 
+			if (logical !== null) {
+				// We already imported interpolateTimeFromLogicalIndex at the top of the file
+				const interpolatedTime = interpolateTimeFromLogicalIndex(this._chart, this._series, logical);
+ 
+				if (interpolatedTime !== null) {
+					const timeAsHorzScaleItem = interpolatedTime as unknown as HorzScaleItem;
+					const pluginFormatter = this._plugin.getTimeFormatter();
+					const chartFormatter = this._chart.options().localization.timeFormatter;
+ 
+					let text = '';
+					if (pluginFormatter) {
+						text = pluginFormatter(timeAsHorzScaleItem);
+					} else if (chartFormatter) {
+						text = chartFormatter(timeAsHorzScaleItem);
+					} else {
+						const internalItem = this._horzScaleBehavior.convertHorzItemToInternal(timeAsHorzScaleItem);
+						text = this._horzScaleBehavior.formatHorzItem(internalItem);
+					}
+
+					// Push the formatted text to the supplemental view and request a repaint
+					this._plugin.updateCrosshairTimeLabel(text, params.point.x as Coordinate, true);
+					
+					// We use a custom flag to track visibility to avoid spamming the else block
+					(this as any)._crosshairSupplementalVisible = true; 
+					this._plugin.requestUpdate();
+				} else {
+					if ((this as any)._crosshairSupplementalVisible) {
+						this._plugin.updateCrosshairTimeLabel('', 0 as Coordinate, false);
+						(this as any)._crosshairSupplementalVisible = false;
+						this._plugin.requestUpdate();
+					}
+				}
+			}
+		} else {
+			// ONLY update/clear if it was previously turned on!
+			if ((this as any)._crosshairSupplementalVisible) {
+				// Mouse is over valid data or out of bounds, hide the custom label so native takes over
+				this._plugin.updateCrosshairTimeLabel('', 0 as Coordinate, false);
+				(this as any)._crosshairSupplementalVisible = false;
+				this._plugin.requestUpdate(); // Ensure it clears immediately
+			}
+		}
 
 		// --- Ghosting Logic (Drawing Mode) ---
 		const toolBeingCreated = this._currentToolCreating;
