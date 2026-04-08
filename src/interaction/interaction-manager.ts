@@ -8,13 +8,15 @@ import {
 	IHorzScaleBehavior,
 	Coordinate,
 	IPaneApi,
-	TouchMouseEventData
+	TouchMouseEventData,
+	Time,
+	Logical,
 } from 'lightweight-charts';
 import { LineToolsCorePlugin } from '../core-plugin';
 import { BaseLineTool } from '../model/base-line-tool';
 import { ToolRegistry } from '../model/tool-registry';
 import { LineToolPartialOptionsMap, LineToolType, InteractionPhase, HitTestType, HitTestResult, SnapAxis, FinalizationMethod, PaneCursorType } from '../types';
-import { Point, interpolateTimeFromLogicalIndex } from '../utils/geometry';
+import { Point, interpolateTimeFromLogicalIndex, interpolateLogicalIndexFromTime } from '../utils/geometry';
 import { LineToolPoint } from '../api/public-api';
 import { ensureNotNull, deepCopy } from '../utils/helpers';
 
@@ -54,6 +56,8 @@ export class InteractionManager<HorzScaleItem> {
 	private _draggedPointIndex: number | null = null;
 	private _originalDragPoints: LineToolPoint[] | null = null;
 	private _dragStartPoint: Point | null = null;
+	// Cache for logical indices to ensure gap-proof translation
+	private _originalDragLogicalIndices: (Logical | null)[] | null = null;
 	// Store the cursor that started the interaction
     private _activeDragCursor: PaneCursorType | null = null;
 
@@ -266,6 +270,7 @@ export class InteractionManager<HorzScaleItem> {
 			this._draggedTool = null;
 			this._creationTool = null;
 			this._draggedPointIndex = null;
+			this._originalDragLogicalIndices = null;
 			this._mouseDownPoint = null;
 			this._mouseDownTime = 0;
 			this._isDrag = false;
@@ -504,8 +509,14 @@ export class InteractionManager<HorzScaleItem> {
 			
 			// Store the collected points for drag comparison
 			this._originalDragPoints = allOriginalPoints;
+
+			// Pre-calculate the logical indices of all points
+			this._originalDragLogicalIndices = allOriginalPoints.map(p => 
+				interpolateLogicalIndexFromTime(this._chart, this._series, p.timestamp as unknown as Time)
+			);
+
 			// highlight-end
-			this._dragStartPoint = point; 
+			this._dragStartPoint = point;
 
 			this._chart.applyOptions({ handleScroll: { pressedMouseMove: false } });
 
@@ -718,19 +729,44 @@ export class InteractionManager<HorzScaleItem> {
 						return;
 					}
 					
-					// 4. Calculate the Stable Translation Vector in Logical Space (Time and Price)
-					// This vector is the difference between the intended P0 and the original P0.
-					const timeTranslationVector = newLogicalP0.timestamp - initialLogicalP0.timestamp;
+					// 4. Calculate the Stable Translation Vector in Logical Space (Index and Price)
+					const initialP0LogicalIndex = this._originalDragLogicalIndices![0];
+					//const newP0LogicalIndex = interpolateLogicalIndexFromTime(this._chart, this._series, newLogicalP0.timestamp as unknown as Time);
+					// OPTIMIZATION: Get the logical index directly from the screen X coordinate 
+					// instead of reverse-engineering it from the timestamp!
+					const newP0LogicalIndex = this._chart.timeScale().coordinateToLogical(newScreenP0.x);
+
+					if (initialP0LogicalIndex === null || newP0LogicalIndex === null) {
+						console.warn(`[InteractionManager] Failed to determine logical indices for translation.`);
+						return;
+					}
+
+					const logicalIndexDelta = newP0LogicalIndex - initialP0LogicalIndex;
 					const priceTranslationVector = newLogicalP0.price - initialLogicalP0.price;
 
 					const newLogicalPoints: LineToolPoint[] = [];
 
-					// 5. Apply the Stable Translation Vector to all original points.
-					for (const originalLogicalPoint of this._originalDragPoints) {
+					// 5. Apply the Logical Translation Vector to all original points.
+					for (let i = 0; i < this._originalDragPoints.length; i++) {
+						const originalLogicalPoint = this._originalDragPoints[i];
+						const originalIndex = this._originalDragLogicalIndices![i];
 						
+						let newTimestamp = originalLogicalPoint.timestamp; // Fallback
+
+						if (originalIndex !== null) {
+							// Shift the point purely by the amount of candles/indices moved
+							const targetLogicalIndex = originalIndex + logicalIndexDelta;
+							
+							// Convert that shifted index back into a reliable timestamp
+							const interpolatedTime = interpolateTimeFromLogicalIndex(this._chart, this._series, targetLogicalIndex);
+							
+							if (interpolatedTime !== null) {
+								newTimestamp = this._horzScaleBehavior.key(interpolatedTime as unknown as HorzScaleItem) as number;
+							}
+						}
+
 						const translatedLogicalPoint: LineToolPoint = {
-							// Apply the stable logical vectors
-							timestamp: originalLogicalPoint.timestamp + timeTranslationVector,
+							timestamp: newTimestamp,
 							price: originalLogicalPoint.price + priceTranslationVector,
 						};
 
@@ -1141,6 +1177,7 @@ export class InteractionManager<HorzScaleItem> {
 		this._draggedTool = null;
 		this._draggedPointIndex = null;
 		this._dragStartPoint = null;
+		this._originalDragLogicalIndices = null;
 		this._originalDragPoints = null;
 		this._chart.applyOptions({ handleScroll: { pressedMouseMove: true } });
 
