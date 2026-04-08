@@ -11,7 +11,7 @@ import { BaseLineTool } from '../model/base-line-tool';
 import { LineToolPoint } from '../api/public-api';
 import { generateContrastColors } from '../utils/helpers';
 import { IChartApiBase, Coordinate, Time, ITimeScaleApi, UTCTimestamp, isBusinessDay, isUTCTimestamp, InternalHorzScaleItem, ISeriesPrimitiveAxisView, Logical } from 'lightweight-charts';
-import { interpolateLogicalIndexFromTime } from '../utils/geometry';
+import { interpolateLogicalIndexFromTime, logicalIndexToCoordinate } from '../utils/geometry';
 
 
 // Assume TimeAxisViewRenderer is a class as defined in src/rendering/time-axis-view-renderer.ts
@@ -176,19 +176,21 @@ export class LineToolTimeAxisLabelView<HorzScaleItem> implements ITimeAxisView {
 	}
 
 	/**
-     * The core logic for calculating the label's data.
-     * 
-     * Performs the following critical steps:
-     * 1. **Visibility Check:** Determines if the label should be shown based on options and state.
-     * 2. **Styling:** Calculates background and high-contrast text colors.
-     * 3. **Formatting:** Uses `horzScaleBehavior` to format the timestamp into a string.
-     * 4. **Coordinate Calculation (The "Blank Space" Logic):**
-     *    Instead of standard `timeToCoordinate` (which fails for future dates), it uses 
-     *    {@link interpolateLogicalIndexFromTime} to calculate a logical position even 
-     *    where no data exists, allowing the label to be placed accurately in the empty future space.
-     * 
-     * @private
-     */
+	 * Synchronizes the internal state of the time axis label with the tool's current logical position.
+	 * 
+	 * This method acts as the data-preparation engine for the renderer. It performs 
+	 * visibility arbitration, tiered text formatting (matching chart localization), 
+	 * high-contrast color generation, and coordinate mapping.
+	 * 
+	 * ### Sub-Pixel Accuracy
+	 * This view utilizes fractional logical index interpolation to ensure that labels 
+	 * do not "jump" between candles on higher timeframes. By calculating visual positions 
+	 * manually via neighbor-probing, it avoids native API limitations that would otherwise 
+	 * cause labels to stick to the left edge of the screen.
+	 * 
+	 * @private
+	 * @returns void
+	 */
 	private _updateImpl(): void {
 		const data = this._rendererData;
 
@@ -200,115 +202,86 @@ export class LineToolTimeAxisLabelView<HorzScaleItem> implements ITimeAxisView {
 		data.text = '';
 		data.coordinate = 0 as Coordinate;
 
-		/**
-		 * CULLING CHECK
-		 * If the parent tool has been determined to be off-screen by the Model's
-		 * geometric culling engine, we skip all label calculations.
-		 */
+		// Culling Check: If the parent tool has been determined to be off-screen 
+		// by the Model's geometric culling engine, we skip all label calculations.
 		if (this._tool.isCulled()) {
-			// Because we did the "Hard Reset" above, returning here now 
-			// correctly tells the chart that this label is 100% invisible.
 			return;
 		}
 
 		const toolOptions = this._tool.options();
 
-		// Determine label visibility based on options and active state
-		// We narrow the definition of "Active" to exclude hovering.
+		// Determine label visibility based on options and active state.
 		// Labels will now only appear if the tool is selected, being edited, 
-		// or in the process of being created.
+		// or in the process of being created (hovering is excluded).
 		const isToolActive = this._tool.isSelected() || this._tool.isEditing() || this._tool.isCreating();
 
-
-		// The label is visible if:
-		// 1. Tool is generally visible AND
-		// 2. showTimeAxisLabels is true AND
-		// 3. (Label is set to "Always Visible" OR Tool is currently in an active state)
+		// Visibility Gate: The label is processed only if the tool is visible, 
+		// labels are enabled in options, and the interaction state requirements are met.
 		if (!toolOptions.visible || !toolOptions.showTimeAxisLabels || !(toolOptions.timeAxisLabelAlwaysVisible || isToolActive)) {
 			return;
 		}
 
-		// Get the specific point for this label
+		// Retrieve the specific logical point from the model associated with this view.
 		const point = this._tool.getPoint(this._pointIndex);
 		if (!point || !isFinite(point.timestamp)) {
 			return;
 		}
 
-		// --- TIERED FORMATTING LOGIC ---
-
-		// Prepare the time value for formatting
+		// --- 1. TIERED FORMATTING LOGIC ---
+		// We resolve the text label string using the highest-priority formatter available.
+		// This ensures the labels match the chart's local time zone and date preferences.
 		const timeAsHorzScaleItem = point.timestamp as unknown as HorzScaleItem;
-
-		// Priority 1: Check for Plugin-level override
 		const pluginFormatter = this._tool.coreApi().getTimeFormatter();
-		
-		// Priority 2: Check for Chart-level localization
 		const chartFormatter = this._chart.options().localization.timeFormatter;
 
 		if (pluginFormatter) {
-			// Level 1 Wins
+			// Level 1: Global Plugin Override (provided via setTimeFormatter)
 			data.text = pluginFormatter(timeAsHorzScaleItem);
 		} else if (chartFormatter) {
-			// Level 2 Wins (Automatically picks up your Los Angeles / Moment.js logic)
+			// Level 2: Chart-level localization (provided via chart options)
 			data.text = chartFormatter(timeAsHorzScaleItem);
 		} else {
-			// Level 3 Fallback: Standard scale behavior
+			// Level 3: Fallback to the standard scale behavior formatting.
 			const internalHorzItem = this._tool.horzScaleBehavior.convertHorzItemToInternal(timeAsHorzScaleItem);
 			data.text = this._tool.horzScaleBehavior.formatHorzItem(internalHorzItem);
 		}
 
-		// --- END TIERED FORMATTING LOGIC ---		
-
-		// Determine the background color for the label
+		// --- 2. STYLE CALCULATION ---
+		// Determine the background color and generate a high-contrast foreground color 
+		// (black or white) to ensure the text remains readable regardless of label color.
 		const backgroundColor = this._tool.timeAxisLabelColor();
-		if (backgroundColor === null) {
-			return;
-		}
+		if (backgroundColor === null) return;
 
-		// Use the utility to generate contrasting text color
 		const colors = generateContrastColors(backgroundColor);
 		data.background = colors.background;
 		data.color = colors.foreground;
 
-		if (this._timeScale.getVisibleLogicalRange() === null) {
-			return;
-		}
+		// Verify the TimeScale is ready before proceeding to coordinate math.
+		if (this._timeScale.getVisibleLogicalRange() === null) return;
 
-		// --- 2. COORDINATE FIX: Get Interpolated Logical Index for Blank Space Plotting ---
-
-		/*
-		 * We must use the structural method to get a Logical Index that accounts for blank space.
-		 * 
-		 * We already have 'timeAsHorzScaleItem' (which is just the timestamp number).
-		 * LWC's logicalToCoordinate requires a 'Logical' number which is correct if the index exists.
-		 * 
-		 * We rely on the utility function [interpolateLogicalIndexFromTime] (the only way to safely 
-		 * get an interpolated logical position in blank space for now).
-		*/
-
-		// Convert the time to a Logical Index that solves the blank space problem.
-		// We use the raw timestamp (which is part of the 'Time' union type expected by the geometry helper).
+		// --- 3. COORDINATE RESOLUTION ---
+		
+		// First, resolve the fractional logical index using our robust 3-Zone engine.
+		// This handles historical data, weekend gaps, and future blank space extrapolation.
 		const interpolatedLogicalIndex = interpolateLogicalIndexFromTime(
 			this._chart,
-			this._tool.getSeries(), // Pass ISeriesApi from the BaseLineTool
+			this._tool.getSeries(),
 			timeAsHorzScaleItem as unknown as Time
 		);
 
-		if (interpolatedLogicalIndex === null) {
-			console.warn(`[TimeLabelView] Skipping update: Time-to-Index Interpolation failed for timestamp ${point.timestamp}`);
+		if (interpolatedLogicalIndex === null) return;
+
+		// Use the Unified Logic Helper to convert the index into a pixel coordinate.
+		// This bypasses the Lightweight Charts bug where decimals cause coordinates to reset to 0.
+		const finalX = logicalIndexToCoordinate(this._timeScale, interpolatedLogicalIndex);
+
+		// Final Validation: Ensure the calculated coordinate is a valid, drawable number.
+		if (finalX === null || !isFinite(finalX) || isNaN(finalX)) {
 			return;
 		}
 
-		// Convert the interpolated Logical Index into a Screen Coordinate.
-		const coordinate = this._timeScale.logicalToCoordinate(interpolatedLogicalIndex as unknown as Logical);
-
-		if (coordinate === null || !isFinite(coordinate)) {
-			console.warn(`[TimeLabelView] Skipping update: Logical-to-Coordinate failed for index ${interpolatedLogicalIndex}`);
-			return;
-		}
-
-		// Finalize data
-		data.coordinate = coordinate as Coordinate;
+		// Update the shared renderer data with the definitive results for the paint cycle.
+		data.coordinate = finalX;
 		data.width = this._timeScale.width();
 		data.visible = true;
 	}

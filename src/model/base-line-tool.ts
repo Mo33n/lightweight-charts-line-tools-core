@@ -49,7 +49,7 @@ import {
 	FinalizationMethod,
 	LineToolCullingInfo,
 } from '../types';
-import { Point, interpolateTimeFromLogicalIndex, interpolateLogicalIndexFromTime   } from '../utils/geometry';
+import { Point, interpolateTimeFromLogicalIndex, interpolateLogicalIndexFromTime, logicalIndexToCoordinate   } from '../utils/geometry';
 import { LineToolsCorePlugin } from '../core-plugin';
 import { PriceDataSource } from './price-data-source';
 // Imports for the LineTool specific axis views
@@ -1016,71 +1016,33 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 
 	// #region Utilities for subclasses
 
-
 	/**
 	 * Transforms a logical data point (timestamp/price) into pixel screen coordinates.
 	 *
-	 * This is a high-precision coordinate mapper that solves two critical problems:
-	 * 1. **Timeframe Immunity:** It uses fractional logical indices to allow line tools to 
-	 *    float proportionally between candles when switching to higher timeframes (e.g., 1m -> 5m).
-	 * 2. **API Bug Bypass:** Native `logicalToCoordinate` often fails or returns 0 when 
-	 *    passed a decimal. This method bypasses that by requesting integer boundaries and 
-	 *    manually interpolating the pixel distance.
+	 * Uses unified logical-to-coordinate interpolation to ensure timeframe immunity 
+	 * and bypass native API decimal bugs.
 	 *
-	 * @param point - The logical {@link LineToolPoint} containing timestamp and price.
-	 * @returns A {@link Point} with screen coordinates, or `null` if conversion fails or is off-chart.
+	 * @param point - The logical point to convert.
+	 * @returns A Point with screen coordinates, or null.
 	 */
 	public pointToScreenPoint(point: LineToolPoint): Point | null {
-		const timeScale = this._chart.timeScale();
-
-		// 1. Resolve the Logical Index for the given timestamp.
-		// This uses our 3-Zone engine to handle history, gaps, and the blank space.
+		// 1. Resolve the Logical Index (float) for the timestamp.
 		const logicalIndex = interpolateLogicalIndexFromTime(this._chart, this._series, point.timestamp as UTCTimestamp);
+		if (logicalIndex === null) return null;
 
-		if (logicalIndex === null) {
-			return null;
-		}
+		// 2. Convert Index to X-pixel using our unified helper.
+		const x = logicalIndexToCoordinate(this._chart.timeScale(), logicalIndex);
 
-		// 2. Convert Logical Index to X-Coordinate.
-		// We implement custom pixel interpolation to ensure sub-bar precision.
-		let x: number | null = null;
-
-		const leftLogical = Math.floor(logicalIndex);
-		const rightLogical = Math.ceil(logicalIndex);
-
-		if (leftLogical === rightLogical) {
-			// Handle exact integer matches (point lands exactly on a candle stem).
-			x = timeScale.logicalToCoordinate(leftLogical as Logical);
-		} else {
-			// Handle fractional indices (point floats between candles).
-			// We ask the chart for the exact pixel positions of the two neighboring candles.
-			const xLeft = timeScale.logicalToCoordinate(leftLogical as Logical);
-			const xRight = timeScale.logicalToCoordinate(rightLogical as Logical);
-
-			if (xLeft !== null && xRight !== null) {
-				// We calculate the pixel position manually.
-				// This avoids the Lightweight Charts bug where passing decimals returns 0.
-				const fraction = logicalIndex - leftLogical;
-				x = xLeft + fraction * (xRight - xLeft);
-			} else {
-				// Fallback: if one neighbor is off-screen, we round to the nearest visible candle.
-				x = timeScale.logicalToCoordinate(Math.round(logicalIndex) as Logical);
-			}
-		}
-
-		// 3. Convert Price to Y-Coordinate.
-		// This uses the series' native coordinate mapper.
+		// 3. Convert Price to Y-pixel.
 		const y = this._series.priceToCoordinate(point.price);
 
-		// 4. Final Safety Validation.
-		// We verify that the results are finite and valid numbers before creating the point.
-		// This prevents drawing corruption if math results in NaN or Infinity.
+		// 4. Final Validation.
 		if (x === null || y === null || !isFinite(x) || isNaN(x) || isNaN(y)) {
 			return null;
 		}
 
 		return new Point(x, y);
-	}
+	}	
 
 	/**
 	 * Transforms a pixel screen coordinate into a logical data point (timestamp/price).

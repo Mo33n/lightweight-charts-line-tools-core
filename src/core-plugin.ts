@@ -479,7 +479,11 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	public getBarAtTime(time: number | string): any | null {
 		const targetKey = typeof time === 'number' ? time : this._horzScaleBehavior.key(time as any);
 		const index = this._findBarIndex(targetKey as number, 'exact');
-		return index !== -1 ? this._series.data()[index] : null;
+		
+		// PERFORMANCE FIX: Use dataByIndex instead of data()[index]
+		// Calling .data() creates a full copy of the chart array. dataByIndex is O(1) 
+		// and points directly to the existing object in memory.
+		return index !== -1 ? this._series.dataByIndex(index as any, 0) : null;
 	}
 
 	/**
@@ -493,8 +497,10 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	public getClosestBar(time: number | string, mode: 'exact' | 'floor' | 'ceil' | 'nearest'): any | null {
 		const targetKey = typeof time === 'number' ? time : this._horzScaleBehavior.key(time as any);
 		const index = this._findBarIndex(targetKey as number, mode);
-		return index !== -1 ? this._series.data()[index] : null;
-	}
+		
+		// PERFORMANCE FIX: Use dataByIndex to avoid massive array allocations during high-frequency lookups
+		return index !== -1 ? this._series.dataByIndex(index as any, 0) : null;
+	}	
 
 	/**
 	 * Retrieves the data row located at a specific pixel coordinate on the chart.
@@ -929,18 +935,36 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	 *
 	 * @private
 	 * @param targetKey - The numeric timestamp key to search for.
-	 * @param mode - The search mode ('exact', 'floor', 'ceil', 'nearest').
+	 * @param mode - The search mode ('exact', 'floor', 'ceil', or 'nearest').
 	 * @returns The index of the matching bar in the series data array, or -1 if not found.
 	 */
 	private _findBarIndex(targetKey: number, mode: 'exact' | 'floor' | 'ceil' | 'nearest'): number {
-		const data = this._series.data();
+
+		// PERFORMANCE FIX: We must avoid calling this._series.data() here.
+		// That method creates a full copy of the chart array, which is slow and memory intensive.
+		// Instead, we resolve the chart boundaries using O(1) direct index lookups.
+		const lastBar = this.getLatestBar();
+		if (!lastBar) return -1;
+
+		// We find the search ceiling by mapping the latest bar's time to its logical index.
+		const timeScale = this._chart.timeScale();
+		const lastLogical = timeScale.coordinateToLogical(timeScale.timeToCoordinate(lastBar.time as HorzScaleItem)!);
+		
+		if (lastLogical === null) return -1;
+
 		let low = 0;
-		let high = data.length - 1;
+		let high = Math.round(lastLogical);
 		let lastValidIndex = -1;
 
+		// Standard Binary Search using direct index probes via dataByIndex
 		while (low <= high) {
 			const mid = (low + high) >> 1;
-			const midKey = this._horzScaleBehavior.key(data[mid].time as HorzScaleItem);
+			
+			// dataByIndex(mid, 0) is the efficient way to look at a candle without extracting the whole array.
+			const midBar = this._series.dataByIndex(mid as any, 0);
+			if (!midBar) break;
+
+			const midKey = this._horzScaleBehavior.key(midBar.time as HorzScaleItem);
 
 			if (midKey === targetKey) return mid;
 
@@ -955,21 +979,26 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 
 		if (mode === 'exact' || lastValidIndex === -1) return -1;
 
-		// Refined 'nearest' logic to handle the scope properly
+		// Refined 'nearest' logic using direct index probes
 		if (mode === 'nearest') {
-			const k1 = this._horzScaleBehavior.key(data[lastValidIndex].time as HorzScaleItem);
-			const otherIndex = k1 < targetKey ? lastValidIndex + 1 : lastValidIndex - 1;
+			const bar1 = this._series.dataByIndex(lastValidIndex as any, 0);
+			
+			// NULL CHECK: Ensure the primary neighbor bar was successfully retrieved
+			if (bar1) {
+				const k1 = this._horzScaleBehavior.key(bar1.time as HorzScaleItem);
+				const otherIndex = k1 < targetKey ? lastValidIndex + 1 : lastValidIndex - 1;
 
-			if (otherIndex >= 0 && otherIndex < data.length) {
-				const k2 = this._horzScaleBehavior.key(data[otherIndex].time as HorzScaleItem);
-				if (Math.abs(targetKey - k2) < Math.abs(targetKey - k1)) {
-					return otherIndex;
+				const bar2 = this._series.dataByIndex(otherIndex as any, 0);
+				if (bar2) {
+					const k2 = this._horzScaleBehavior.key(bar2.time as HorzScaleItem);
+					if (Math.abs(targetKey - k2) < Math.abs(targetKey - k1)) {
+						return otherIndex;
+					}
 				}
 			}
 		}
 
 		return lastValidIndex;
 	}
-
 
 }
