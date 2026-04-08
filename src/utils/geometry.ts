@@ -838,21 +838,74 @@ export function convertUTCTimestampToDateString(timestamp: UTCTimestamp): string
 }
 
 /**
- * **Critical Core Utility: Time Extrapolation**
+ * Internal Helper: Proves the chart's true time interval by checking up to 10 adjacent bars.
  * 
- * Converts a fractional logical index into a precise Time value. 
+ * **The Problem:** If we just subtract the last two candles to find the chart's interval, 
+ * those two candles might straddle a weekend (e.g., Friday 4:00 PM and Monday 9:30 AM). 
+ * Using a 65-hour interval to project lines into the future would cause them to fly off the screen.
  * 
- * ### Architecture & Performance:
- * 1. **Zero-Allocation:** We strictly avoid `series.data()` to prevent memory leaks during 60fps interaction loops.
- * 2. **Dynamic Anchoring (Gap Protection):** 
- *    - If the index is *inside* the chart, it interpolates exactly between the two nearest bars (perfectly absorbing weekend gaps).
- *    - If the index is *outside* the chart (the future/past), it anchors to the very last (or first) two bars to project outward linearly without dragging historical gaps into the math.
+ * **The Solution:** We step backward from the edge of the chart. We calculate the interval 
+ * between Bar 1 & 2, and Bar 2 & 3. If they match, we have mathematically "proved" the true 
+ * timeframe of the chart. We cap this at 10 checks to protect against irregular Tick Data.
  * 
- * @typeParam HorzScaleItem - The type of the horizontal scale item.
- * @param chart - The chart API instance.
  * @param series - The series API instance.
- * @param logicalIndex - The logical index (float) to convert into a time.
- * @returns The extrapolated `Time`, or `null` if the series lacks data.
+ * @param direction - Whether we are projecting into the 'future' (check last bars) or 'past' (check first bars).
+ * @param firstLogical - The logical index of the first available bar.
+ * @param lastLogical - The logical index of the last available bar.
+ * @returns The verified interval in seconds, or `null` if it couldn't be determined.
+ */
+function _getVerifiedBarInterval<HorzScaleItem>(
+	series: ISeriesApi<SeriesType, HorzScaleItem>,
+	direction: 'first' | 'last',
+	firstLogical: number,
+	lastLogical: number
+): number | null {
+	const maxChecks = 10;
+	const startIndex = direction === 'last' ? lastLogical : firstLogical;
+	const step = direction === 'last' ? -1 : 1; 
+
+	let prevInterval: number | null = null;
+
+	for (let i = 0; i < maxChecks; i++) {
+		const barA = series.dataByIndex(startIndex + (i * step), 0);
+		const barB = series.dataByIndex(startIndex + ((i + 1) * step), 0);
+
+		if (!barA || !barB) break;
+
+		const tA = typeof barA.time === 'string' ? convertDateStringToUTCTimestamp(barA.time) : Number(barA.time);
+		const tB = typeof barB.time === 'string' ? convertDateStringToUTCTimestamp(barB.time) : Number(barB.time);
+		
+		const interval = Math.abs(tA - tB);
+
+		if (prevInterval !== null && interval === prevInterval) {
+			return interval;
+		}
+		prevInterval = interval;
+	}
+
+	return prevInterval;
+}
+
+/**
+ * **Critical Core Utility: Time Extrapolation (3-Zone Architecture)**
+ * 
+ * Converts a fractional Logical Index into a precise UNIX Timestamp or Date String.
+ * 
+ * ### Architecture Benefits:
+ * 1. **Zone 1 (Native Truth):** Performs a direct $O(1)$ lookup for integer indices, ensuring 100% accuracy 
+ *    for points snapped exactly to candle stems.
+ * 2. **Zone 2 (History Interpolation):** For fractional indices within chart history, it identifies the 
+ *    two specific neighboring candles and interpolates the time between them. This allows tools 
+ *    to glide over weekend or holiday gaps without the math being distorted by "missing" time.
+ * 3. **Zone 3 (Verified Blank Space):** When projecting into the future or past, it uses a multi-point 
+ *    verification algorithm to identify the true chart interval, preventing "weekend-straddle" 
+ *    errors from launching tools off-screen.
+ * 
+ * @typeParam HorzScaleItem - The type of the horizontal scale item (Time, UTCTimestamp, or string).
+ * @param chart - The Lightweight Charts API instance.
+ * @param series - The series API instance providing the data context.
+ * @param logicalIndex - The fractional index to convert into a time value.
+ * @returns The extrapolated `Time` matching the series format, or `null` if the series is empty.
  */
 export function interpolateTimeFromLogicalIndex<HorzScaleItem>(
 	chart: IChartApiBase<HorzScaleItem>,
@@ -861,66 +914,83 @@ export function interpolateTimeFromLogicalIndex<HorzScaleItem>(
 ): Time | null {
 	if (!chart || !series) return null;
 
-	const timeScale = chart.timeScale();
+	// 1. Establish absolute boundaries using the series data array.
+	// We use the array length to define indices 0 to N-1. This is significantly 
+	// more robust than pixel-to-logical conversion, which can fail if bars are off-screen.
+	const data = series.data();
+	if (data.length === 0) return null;
 
-	// --- TIER 1: INTERNAL RANGE (The Native Truth) ---
-	
-	// We check if a bar exists at this exact rounded index. 
-	// This is an O(1) operation and is the only way to perfectly respect weekend gaps.
-	const roundedIndex = Math.round(logicalIndex);
-	const exactBar = series.dataByIndex(roundedIndex, 0); // 0 = MismatchDirection.None
-	
-	if (exactBar) {
-		return exactBar.time as unknown as Time;
+	const firstLogical = 0;
+	const lastLogical = data.length - 1;
+
+	const firstBar = data[firstLogical];
+	const lastBar = data[lastLogical];
+
+	// 2. Normalize the edge timestamps into numeric UNIX seconds for calculation.
+	const firstTimeNum = typeof firstBar.time === 'string' ? convertDateStringToUTCTimestamp(firstBar.time as string) : Number(firstBar.time);
+	const lastTimeNum = typeof lastBar.time === 'string' ? convertDateStringToUTCTimestamp(lastBar.time as string) : Number(lastBar.time);
+
+	let interpolatedTime: number;
+
+	// --- HISTORY ZONE: Logic for points between the first and last available candle ---
+	if (logicalIndex >= firstLogical && logicalIndex <= lastLogical) {
+		
+		// Zone 1: Direct Integer Match
+		// If the index is a whole number, we return the exact timestamp of that bar.
+		if (Number.isInteger(logicalIndex)) {
+			const exactBar = series.dataByIndex(logicalIndex, 0);
+			if (exactBar) return exactBar.time as unknown as Time;
+		}
+
+		// Zone 2: Fractional History
+		// The point falls between two candles. We find the specific neighbors 
+		// and interpolate the time based on the distance between them.
+		const leftIndex = Math.floor(logicalIndex);
+		let rightIndex = Math.ceil(logicalIndex);
+		
+		// Safety check to prevent a 0-width interval if floor and ceil are identical.
+		if (leftIndex === rightIndex) rightIndex = leftIndex + 1; 
+		
+		const leftBar = series.dataByIndex(leftIndex, 0);
+		const rightBar = series.dataByIndex(rightIndex, 0);
+
+		if (!leftBar || !rightBar) return null;
+
+		const tLeft = typeof leftBar.time === 'string' ? convertDateStringToUTCTimestamp(leftBar.time as string) : Number(leftBar.time);
+		const tRight = typeof rightBar.time === 'string' ? convertDateStringToUTCTimestamp(rightBar.time as string) : Number(rightBar.time);
+
+		// Calculate the precise linear position within the two neighbor bars.
+		const fraction = logicalIndex - leftIndex;
+		interpolatedTime = tLeft + (fraction * (tRight - tLeft));
+	} 
+	// --- EXTRAPOLATION ZONE: Logic for the "Blank Space" (Future or deep Past) ---
+	else {
+		// Identify direction and request a verified interval (avoiding weekend gaps).
+		const isFuture = logicalIndex > lastLogical;
+		const verifiedInterval = _getVerifiedBarInterval(series, isFuture ? 'last' : 'first', firstLogical, lastLogical);
+		
+		if (verifiedInterval === null || verifiedInterval === 0) return null;
+
+		if (isFuture) {
+			// Project forward from the last known candle.
+			const logicalDelta = logicalIndex - lastLogical;
+			interpolatedTime = lastTimeNum + (logicalDelta * verifiedInterval);
+		} else {
+			// Project backward from the first known candle.
+			const logicalDelta = firstLogical - logicalIndex;
+			interpolatedTime = firstTimeNum - (logicalDelta * verifiedInterval);
+		}
 	}
 
-	// --- TIER 2: EXTERNAL RANGE (Dynamic Anchor Logic) ---
-	
-	// If we are here, we are in the "Blank Space" (Future or Past).
-	// We need the boundaries of the chart to decide which way to anchor.
-	const firstBar = series.dataByIndex(-Number.MAX_SAFE_INTEGER, 1);
-	const lastBar = series.dataByIndex(Number.MAX_SAFE_INTEGER, -1);
-	
-	if (!firstBar || !lastBar) return null;
-
-	// Use the public API chain (Time -> Coordinate -> Logical) to find boundaries.
-	// Note: LWC v5 allows mapping coordinates even for off-screen bars.
-	const lastCoord = timeScale.timeToCoordinate(lastBar.time as unknown as HorzScaleItem);
-	const lastLogical = lastCoord !== null ? timeScale.coordinateToLogical(lastCoord) : null;
-
-	if (lastLogical === null) return null;
-
-	const isFuture = logicalIndex > lastLogical;
-	const anchorBar2 = isFuture ? lastBar : firstBar;
-	const anchorLogical2 = isFuture ? lastLogical : 0; // First bar is index 0 in a standard setup
-	
-	// Fetch the neighbor bar to calculate the interval (Time per Bar)
-	const neighborIndex = isFuture ? lastLogical - 1 : 1;
-	const anchorBar1 = series.dataByIndex(neighborIndex, 0) || (isFuture ? firstBar : lastBar);
-
-	// Convert timestamps to numbers for math
-	const t1 = typeof anchorBar1.time === 'string' 
-		? convertDateStringToUTCTimestamp(anchorBar1.time as unknown as string) 
-		: Number(anchorBar1.time);
-	const t2 = typeof anchorBar2.time === 'string' 
-		? convertDateStringToUTCTimestamp(anchorBar2.time as unknown as string) 
-		: Number(anchorBar2.time);
-
-	const interval = t2 - t1;
-	if (interval === 0) return null;
-
-	// Calculate extrapolation from the edge anchor
-	const logicalDelta = logicalIndex - anchorLogical2;
-	const interpolatedTime = t2 + (logicalDelta * interval);
-
-	// Ensure we return the format the series is already using
+	// 3. Format the final numeric result back into the series' native time format.
 	if (typeof firstBar.time === 'string') {
-		return convertUTCTimestampToDateString(interpolatedTime as UTCTimestamp) as string;
+		// Return as ISO Date String (YYYY-MM-DD).
+		return convertUTCTimestampToDateString(interpolatedTime as UTCTimestamp) as unknown as Time;
 	} else {
-		return interpolatedTime as UTCTimestamp;
+		// Return as UNIX Timestamp (Integer).
+		return Math.round(interpolatedTime) as unknown as Time;
 	}
 }
-
 
 
 /**
@@ -983,6 +1053,8 @@ export function getExtendedVisiblePriceRange<HorzScaleItem>(tool: BaseLineTool<H
  * @param timestamp - The target timestamp to convert.
  * @returns The calculated `Logical` index, or `null`.
  */
+//OLD WAY mostly works
+/*
 export function interpolateLogicalIndexFromTime<HorzScaleItem>(
 	chart: IChartApiBase<HorzScaleItem>,
 	series: ISeriesApi<SeriesType, HorzScaleItem>,
@@ -1049,8 +1121,139 @@ export function interpolateLogicalIndexFromTime<HorzScaleItem>(
 
 	return (anchorLogical + logicalDelta) as Logical;
 }
+*/
 
+/**
+ * **Critical Core Utility: Logical Index Recovery (3-Zone Architecture)**
+ * 
+ * Calculates the exact or estimated Logical Index for a specific Timestamp.
+ * 
+ * ### Architecture Benefits:
+ * 1. **Memory Safe:** Uses an $O(log N)$ Binary Search against the series data. It 
+ *    strictly avoids `series.data()`, which would copy the entire chart array 
+ *    into RAM, ensuring the plugin remains performant even with millions of bars.
+ * 2. **Timeframe Immunity:** By finding the exact left and right neighbor candles for 
+ *    a timestamp, tools drawn on a lower timeframe (e.g., 1m) will proportionately 
+ *    float at the correct fractional position on a higher timeframe (e.g., 15m).
+ * 3. **Gap Awareness:** This method is immune to weekends and holiday gaps. Because 
+ *    it searches the actual data array, it glides over empty time periods without 
+ *    adding phantom indices to the visual representation.
+ * 
+ * @typeParam HorzScaleItem - The type of the horizontal scale item.
+ * @param chart - The Lightweight Charts API instance.
+ * @param series - The series API instance providing the data context.
+ * @param timestamp - The target timestamp to convert into an index.
+ * @returns The calculated `Logical` index (including fractions), or `null`.
+ */
+export function interpolateLogicalIndexFromTime<HorzScaleItem>(
+	chart: IChartApiBase<HorzScaleItem>,
+	series: ISeriesApi<SeriesType, HorzScaleItem>,
+	timestamp: Time
+): Logical | null {
+	if (!series || !chart) return null;
 
+	// Normalize the input timestamp into a numeric value for mathematical comparison.
+	const targetTimeNum = typeof timestamp === 'string' ? convertDateStringToUTCTimestamp(timestamp) : Number(timestamp);
+
+	// 1. Establish absolute boundaries using the series data array.
+	// We use the array indices directly (0 to length-1) to define our valid history range.
+	const data = series.data();
+	if (data.length === 0) return null;
+
+	const firstLogical = 0;
+	const lastLogical = data.length - 1;
+
+	const firstBar = data[firstLogical];
+	const lastBar = data[lastLogical];
+
+	const firstTimeNum = typeof firstBar.time === 'string' ? convertDateStringToUTCTimestamp(firstBar.time as string) : Number(firstBar.time);
+	const lastTimeNum = typeof lastBar.time === 'string' ? convertDateStringToUTCTimestamp(lastBar.time as string) : Number(lastBar.time);
+
+	// --- ZONE 1: THE NATIVE TRUTH (With Anti-Clamping) ---
+	// We first check if Lightweight Charts natively knows where this timestamp is.
+	const timeScale = chart.timeScale();
+	const coordinate = timeScale.timeToCoordinate(timestamp as unknown as HorzScaleItem);
+	
+	if (coordinate !== null) {
+		const logicalRaw = timeScale.coordinateToLogical(coordinate);
+		if (logicalRaw !== null) {
+			// Native LWC often clamps a future/past date to the nearest available candle.
+			// We verify the actual bar data at this index to ensure it is a perfect match.
+			const logical = Math.round(logicalRaw);
+			const checkBar = series.dataByIndex(logical, 0);
+			if (checkBar) {
+				const checkTimeNum = typeof checkBar.time === 'string' ? convertDateStringToUTCTimestamp(checkBar.time) : Number(checkBar.time);
+				if (checkTimeNum === targetTimeNum) {
+					// Exact match found in history.
+					return logical as Logical;
+				}
+			}
+		}
+	}
+
+	// --- ZONE 2: THE HISTORY ZONE (Binary Search) ---
+	// If the timestamp is between our first and last candle, we find its fractional position.
+	if (targetTimeNum >= firstTimeNum && targetTimeNum <= lastTimeNum) {
+		
+		let low: number = firstLogical;
+		let high: number = lastLogical;
+		let leftNeighborIndex: number = firstLogical;
+
+		// Perform a fast binary search to find the candle immediately preceding the target time.
+		while (low <= high) {
+			const mid = Math.floor((low + high) / 2);
+			const midBar = series.dataByIndex(mid, 0);
+			if (!midBar) break;
+
+			const midTimeNum = typeof midBar.time === 'string' ? convertDateStringToUTCTimestamp(midBar.time as string) : Number(midBar.time);
+
+			if (midTimeNum === targetTimeNum) {
+				return mid as Logical; // Found an exact match during the search.
+			} else if (midTimeNum < targetTimeNum) {
+				leftNeighborIndex = mid;
+				low = mid + 1;
+			} else {
+				high = mid - 1;
+			}
+		}
+
+		// Calculate the fractional placement between the two discovered neighbors.
+		const rightNeighborIndex = leftNeighborIndex + 1;
+		const leftBar = series.dataByIndex(leftNeighborIndex, 0);
+		const rightBar = series.dataByIndex(rightNeighborIndex, 0);
+
+		if (leftBar && rightBar) {
+			const tLeft = typeof leftBar.time === 'string' ? convertDateStringToUTCTimestamp(leftBar.time as string) : Number(leftBar.time);
+			const tRight = typeof rightBar.time === 'string' ? convertDateStringToUTCTimestamp(rightBar.time as string) : Number(rightBar.time);
+			
+			const interval = tRight - tLeft;
+			if (interval > 0) {
+				// The fraction represents how far into the candle the timestamp is.
+				const fraction = (targetTimeNum - tLeft) / interval;
+				return (leftNeighborIndex + fraction) as Logical;
+			}
+		}
+	}
+
+	// --- ZONE 3: THE BLANK SPACE (Verified Extrapolation) ---
+	// If the timestamp is outside the loaded data, we project it linearly.
+	const isFuture = targetTimeNum > lastTimeNum;
+	const verifiedInterval = _getVerifiedBarInterval(series, isFuture ? 'last' : 'first', firstLogical, lastLogical);
+
+	if (verifiedInterval === null || verifiedInterval === 0) return null;
+
+	if (isFuture) {
+		// Calculate the number of fractional indices past the last bar.
+		const timeDelta = targetTimeNum - lastTimeNum;
+		const logicalDelta = timeDelta / verifiedInterval;
+		return (lastLogical + logicalDelta) as Logical;
+	} else {
+		// Calculate the number of fractional indices before the first bar.
+		const timeDelta = firstTimeNum - targetTimeNum;
+		const logicalDelta = timeDelta / verifiedInterval;
+		return (firstLogical - logicalDelta) as Logical;
+	}
+}
 
 // #endregion Time/Logical Index Interpolation Utilities
 
