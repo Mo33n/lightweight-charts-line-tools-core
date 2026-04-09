@@ -265,6 +265,8 @@ export class InteractionManager<HorzScaleItem> {
 			this._currentToolCreating = null;
 		}
 		if (this._selectedTool === tool) {
+			// Trigger the deselection event before nulling the variable
+			this._plugin.fireSingleClickEvent(this._selectedTool, 'deselected');
 			this._selectedTool = null;
 		}
 		if (this._hoveredTool === tool) {
@@ -381,6 +383,9 @@ export class InteractionManager<HorzScaleItem> {
 		this._selectedTool = tool;
 		this._selectedTool.setSelected(true);
 
+		// Fire the 'selected' event for the newly created tool
+		this._plugin.fireSingleClickEvent(this._selectedTool, 'selected');
+
 		// --- NEW FIX: Call normalize() if implemented by the tool ---
 		const toolWithNormalize = tool as BaseLineTool<HorzScaleItem> & { normalize?: () => void };
 		if (toolWithNormalize.normalize) {
@@ -447,6 +452,9 @@ export class InteractionManager<HorzScaleItem> {
 				this.deselectAllTools();
 				this._selectedTool = hitResult.tool;
 				this._selectedTool.setSelected(true);
+
+				// Fire the 'selected' event for the new tool
+				this._plugin.fireSingleClickEvent(this._selectedTool, 'selected')
 			}
 
 			this._draggedTool = hitResult.tool;
@@ -1238,6 +1246,9 @@ export class InteractionManager<HorzScaleItem> {
 			this.deselectAllTools();
 			this._selectedTool = clickedTool;
 			this._selectedTool.setSelected(true);
+
+			// Fire the 'selected' event for the new tool
+			this._plugin.fireSingleClickEvent(this._selectedTool, 'selected');
 		} else {
 			this.deselectAllTools();
 		}
@@ -1531,9 +1542,16 @@ export class InteractionManager<HorzScaleItem> {
 	public deselectAllTools(): void { // MODIFIED: Made public with a clear name
 		//console.log('inside deselectAllTools')
 		if (this._selectedTool) {
+			// SNAPSHOT: Store the reference before we nullify it
+			const toolToDeselect = this._selectedTool;
+
 			//console.log('setSelected flase in if (this._selectedTool)')
 			this._selectedTool.setSelected(false);
 			this._selectedTool = null;
+
+			// Fire the event using the snapshot so we have access to the ID and type
+			this._plugin.fireSingleClickEvent(toolToDeselect, 'deselected');
+			
 			this._plugin.requestUpdate();
 		}
 	}

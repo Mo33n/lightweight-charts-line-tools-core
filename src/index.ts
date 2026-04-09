@@ -145,6 +145,8 @@ function createDummyPluginApi(): ILineToolsPlugin {
 		unsubscribeLineToolsDoubleClick: dummyFn,
 		subscribeLineToolsAfterEdit: dummyFn,
 		unsubscribeLineToolsAfterEdit: dummyFn,
+		subscribeLineToolsSingleClick: dummyFn,
+		unsubscribeLineToolsSingleClick: dummyFn,		
 		setCrossHairXY: dummyFn,
 		clearCrossHair: dummyFn,
 		setMagnetThreshold: dummyFn,

@@ -93,6 +93,32 @@ export interface LineToolsAfterEditEventParams {
 }
 
 /**
+ * Defines the structured data payload passed to listeners when a line tool selection changes.
+ * 
+ * This object is schema-stable; all keys are always present, but points and options 
+ * will be null when the state is 'deselected' to keep the payload lightweight.
+ */
+export interface LineToolsSingleClickEventParams {
+	// Indicates the new state of the interaction
+	selectionState: 'selected' | 'deselected';
+	// The tool data associated with this state change
+	selectedLineTool: {
+		id: string;
+		toolType: LineToolType;
+		// Points and options are provided only during selection
+		points: LineToolPoint[] | null;
+		options: LineToolOptionsInternal<any> | null;
+	};
+}
+
+/**
+ * The function signature required for handlers subscribing to the single-click selection event.
+ *
+ * @param param - The event data containing the tool identity and its new selection state.
+ */
+export type LineToolsSingleClickEventHandler = (param: LineToolsSingleClickEventParams) => void;
+
+/**
  * The function signature required for handlers subscribing to the double-click event.
  *
  * @param param - The event data containing the details of the double-clicked tool.
@@ -357,6 +383,24 @@ export interface ILineToolsApi {
 	 * @returns void
 	 */
 	unsubscribeLineToolsAfterEdit(handler: LineToolsAfterEditEventHandler): void;
+
+	/**
+	 * Subscribes a handler function to the event that fires when a line tool is selected or deselected.
+	 * 
+	 * This event is "State-Aware" and will only fire when the selection actually changes.
+	 *
+	 * @param handler - The callback function to execute. It receives a {@link LineToolsSingleClickEventParams} object.
+	 * @returns void
+	 */
+	subscribeLineToolsSingleClick(handler: LineToolsSingleClickEventHandler): void;
+
+	/**
+	 * Unsubscribes a handler function from the single-click selection event.
+	 *
+	 * @param handler - The previously subscribed handler function.
+	 * @returns void
+	 */
+	unsubscribeLineToolsSingleClick(handler: LineToolsSingleClickEventHandler): void;	
 	
 	/**
 	 * Programmatically positions the chart's crosshair at a specific screen pixel coordinate.

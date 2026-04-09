@@ -23,6 +23,8 @@ import {
 	LineToolsDoubleClickEventHandler,
 	LineToolsDoubleClickEventParams,
 	LineToolsAfterEditEventParams,
+	LineToolsSingleClickEventHandler,
+	LineToolsSingleClickEventParams,	
 } from './api/public-api';
 import { Delegate } from './utils/helpers';
 import { LineToolPartialOptionsMap, LineToolType, IChartWidgetBase, ITimeAxisView, IPriceAxisView, IPaneView  } from './types';
@@ -72,7 +74,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	// Delegates for broadcasting V3.8-compatible events
 	private readonly _doubleClickDelegate = new Delegate<LineToolsDoubleClickEventParams>();
 	private readonly _afterEditDelegate = new Delegate<LineToolsAfterEditEventParams>();
-
+	private readonly _selectSingleClickDelegate = new Delegate<LineToolsSingleClickEventParams>();
 
 	// Throttled Stacking Update
 	private _stackingUpdateScheduled: boolean = false;
@@ -384,6 +386,8 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 		// Behavioral change: Deselect the tool after applying options, matching V3.8
 		if (tool.isSelected()) {
 			tool.setSelected(false);
+			// Notify frontend that selection was lost due to option update ---
+			this.fireSingleClickEvent(tool, 'deselected');
 		}
 
 		if (toolData.options) {
@@ -623,7 +627,27 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 		this._afterEditDelegate.unsubscribe(handler);
 	}
 
+	/**
+	 * Subscribes a callback function to the "Single Click" selection event.
+	 * 
+	 * This event fires when a tool is selected or when the current selection is cleared.
+	 *
+	 * @param handler - The function to execute when the event fires. Receives {@link LineToolsSingleClickEventParams}.
+	 * @returns void
+	 */
+	public subscribeLineToolsSingleClick(handler: LineToolsSingleClickEventHandler): void {
+		this._selectSingleClickDelegate.subscribe(handler);
+	}
 
+	/**
+	 * Unsubscribes a previously registered callback from the "Single Click" selection event.
+	 *
+	 * @param handler - The specific callback function that was passed to {@link subscribeLineToolsSingleClick}.
+	 * @returns void
+	 */
+	public unsubscribeLineToolsSingleClick(handler: LineToolsSingleClickEventHandler): void {
+		this._selectSingleClickDelegate.unsubscribe(handler);
+	}
 
 	/**
 	 * Sets the crosshair position to a specific pixel coordinate (x, y) on the chart.
@@ -771,6 +795,40 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 			selectedLineTool: tool.getExportData(),
 		};
 		this._doubleClickDelegate.fire(eventParams);
+	}
+
+	/**
+	 * Broadcasts an event indicating that a line tool's selection state has changed.
+	 * 
+	 * This method constructs a predictive payload where keys are always present,
+	 * but geometric and style data is set to null during a 'deselected' state 
+	 * to ensure the payload remains lightweight.
+	 *
+	 * @internal
+	 * @param tool - The tool instance whose state changed.
+	 * @param selectionState - The new state of the tool ('selected' or 'deselected').
+	 * @returns void
+	 */
+	public fireSingleClickEvent(tool: BaseLineTool<HorzScaleItem>, selectionState: 'selected' | 'deselected'): void {
+		console.log(`[CorePlugin] Firing SingleClick event: ${tool.id()} is now ${selectionState}`);
+
+		// Build the predictive payload
+		const eventParams: LineToolsSingleClickEventParams = {
+			selectionState: selectionState,
+			selectedLineTool: {
+				id: tool.id(),
+				toolType: tool.toolType,
+				// Include points and options only if the tool is being selected
+				points: selectionState === 'selected' ? tool.points() : null,
+				options: selectionState === 'selected' ? tool.options() : null,
+			}
+		};
+
+		// --- NEW: Detailed inspection log for testing ---
+		// This will show you the exact object that the frontend will eventually receive.
+		console.log('[CorePlugin] Selection Payload Payload:', JSON.parse(JSON.stringify(eventParams)));
+
+		this._selectSingleClickDelegate.fire(eventParams);
 	}
 
 	/**
