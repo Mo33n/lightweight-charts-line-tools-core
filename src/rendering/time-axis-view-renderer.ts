@@ -115,15 +115,19 @@ export class TimeAxisViewRenderer implements ITimeAxisViewRenderer {
 			ctx.fillRect(Math.round(x1), Math.round(y1), Math.round(x2 - x1), Math.round(y2 - y1));
 
 
-			// Draw the tick mark line (small vertical line under the label)
-			const tickX = Math.round(this._data!.coordinate); // Center of the mark
-			const tickTop = Math.round(y1);
-			const tickBottom = Math.round(y2 + rendererOptions.tickLength); // Extends below the label box
+			// NEW: We wrap the tick-drawing logic in a visibility check.
+			// By checking '!== false', we allow existing tools to keep showing ticks 
+			// by default, while letting the crosshair opt-out.
+			if (this._data!.tickVisible !== false) {
+				const tickX = Math.round(this._data!.coordinate); // Center of the mark
+				const tickTop = Math.round(y1);
+				const tickBottom = Math.round(y2 + rendererOptions.tickLength); // Extends below the label box
 
-			ctx.fillStyle = this._data!.color; // Text color also usually for tick
-			const tickWidth = 1; // 1 CSS pixel thick tick line
-			const tickOffset = 0.5; // For pixel snapping, center the 1px line
-			ctx.fillRect(tickX - tickOffset, tickTop, tickWidth, tickBottom - tickTop);
+				ctx.fillStyle = this._data!.color; // Text color also usually for tick
+				const tickWidth = 1; // 1 CSS pixel thick tick line
+				const tickOffset = 0.5; // For pixel snapping, center the 1px line
+				ctx.fillRect(tickX - tickOffset, tickTop, tickWidth, tickBottom - tickTop);
+			}
 
 			// Draw the text
 			const yText = y2 - rendererOptions.baselineOffset - rendererOptions.paddingBottom;

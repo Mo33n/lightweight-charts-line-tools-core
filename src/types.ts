@@ -1107,6 +1107,16 @@ export interface TimeAxisViewRendererData {
 	color: string;
 	background: string;
 	visible: boolean;
+	/**
+	 * Controls the visibility of the small vertical line (tick) that appears 
+	 * above or in the center of the label box.
+	 * 
+	 * This is typically enabled for tool anchor points but disabled for 
+	 * supplemental crosshair labels to match native chart aesthetics.
+	 * 
+	 * @defaultValue true
+	 */
+	tickVisible?: boolean;
 }
 
 

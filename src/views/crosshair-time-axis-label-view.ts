@@ -36,6 +36,9 @@ export class CrosshairTimeAxisLabelView<HorzScaleItem> implements ITimeAxisView 
 		text: '',
 		width: 0,
 		coordinate: 0 as Coordinate,
+		// Disable the vertical tick mark for the supplemental crosshair 
+		// label to ensure it matches the native chart's clean aesthetic.
+		tickVisible: false,
 	};
 
 	private _invalidated: boolean = true;

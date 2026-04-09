@@ -70,6 +70,14 @@ export class InteractionManager<HorzScaleItem> {
 	private _isShiftKeyDown: boolean = false;
 
 	/**
+	 * Flag used to track if our supplemental crosshair time label is currently visible.
+	 * This is used to throttle requestUpdate() calls, ensuring we only trigger a 
+	 * chart repaint when the label's state actually changes.
+	 * @private
+	 */
+	private _crosshairSupplementalVisible: boolean = false;	
+
+	/**
 	 * Initializes the Interaction Manager, setting up all internal references and subscribing
 	 * to necessary DOM and Lightweight Charts events.
 	 *
@@ -1308,13 +1316,16 @@ export class InteractionManager<HorzScaleItem> {
 		// --- Supplemental Crosshair Label Logic (Blank Space) ---
 		if (params.point && !params.time) {
 			// Mouse is in the extrapolated blank space (future/past)
+			// Step 1: Resolve the raw logical index from the mouse X coordinate.
 			const logical = this._chart.timeScale().coordinateToLogical(params.point.x as Coordinate);
  
 			if (logical !== null) {
 				// We already imported interpolateTimeFromLogicalIndex at the top of the file
+				// Step 2: Extrapolate the "Virtual" timestamp for this index.
 				const interpolatedTime = interpolateTimeFromLogicalIndex(this._chart, this._series, logical);
  
 				if (interpolatedTime !== null) {
+					// Step 3: Format the timestamp based on high-priority localizers.
 					const timeAsHorzScaleItem = interpolatedTime as unknown as HorzScaleItem;
 					const pluginFormatter = this._plugin.getTimeFormatter();
 					const chartFormatter = this._chart.options().localization.timeFormatter;
@@ -1329,27 +1340,39 @@ export class InteractionManager<HorzScaleItem> {
 						text = this._horzScaleBehavior.formatHorzItem(internalItem);
 					}
 
-					// Push the formatted text to the supplemental view and request a repaint
-					this._plugin.updateCrosshairTimeLabel(text, params.point.x as Coordinate, true);
-					
-					// We use a custom flag to track visibility to avoid spamming the else block
-					(this as any)._crosshairSupplementalVisible = true; 
-					this._plugin.requestUpdate();
+					// STEP 4: Calculate the Snapped Coordinate.
+					// To match the native chart behavior, the crosshair label should not 
+					// slide smoothly with the mouse. We round the fractional logical index 
+					// to the nearest integer (the center of the virtual candle) and 
+					// map that back to a pixel X coordinate. This ensures the label 
+					// "jumps" discretely between intervals.
+					const snappedLogical = Math.round(logical);
+					const snappedX = this._chart.timeScale().logicalToCoordinate(snappedLogical as Logical);
+
+					if (snappedX !== null) {
+						// Push the data to our custom view. Note: tickVisible is false in that view.
+						this._plugin.updateCrosshairTimeLabel(text, snappedX as Coordinate, true);
+						
+						// Request an update only if we were previously hidden or position changed.
+						this._crosshairSupplementalVisible = true; 
+						this._plugin.requestUpdate();
+					}
 				} else {
-					if ((this as any)._crosshairSupplementalVisible) {
+					// Safety check: only clear and update if the label was previously active.
+					if (this._crosshairSupplementalVisible) {
 						this._plugin.updateCrosshairTimeLabel('', 0 as Coordinate, false);
-						(this as any)._crosshairSupplementalVisible = false;
+						this._crosshairSupplementalVisible = false;
 						this._plugin.requestUpdate();
 					}
 				}
 			}
 		} else {
-			// ONLY update/clear if it was previously turned on!
-			if ((this as any)._crosshairSupplementalVisible) {
-				// Mouse is over valid data or out of bounds, hide the custom label so native takes over
+			// MOUSE OVER DATA: Hide the custom label so the native LWC label can show.
+			// We use the visibility flag to ensure we only call requestUpdate() once.
+			if (this._crosshairSupplementalVisible) {
 				this._plugin.updateCrosshairTimeLabel('', 0 as Coordinate, false);
-				(this as any)._crosshairSupplementalVisible = false;
-				this._plugin.requestUpdate(); // Ensure it clears immediately
+				this._crosshairSupplementalVisible = false;
+				this._plugin.requestUpdate();
 			}
 		}
 
