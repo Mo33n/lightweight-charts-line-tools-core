@@ -70,6 +70,21 @@ export class InteractionManager<HorzScaleItem> {
 	private _isShiftKeyDown: boolean = false;
 
 	/**
+	 * Lock State — when true, all mouse interactions are suppressed.
+	 * Tools remain visible but cannot be selected, moved, or drawn.
+	 * @private
+	 */
+	private _locked: boolean = false;
+
+	/**
+	 * Tracks the last known chart-relative mouse position.
+	 * Used to accurately determine which pane the mouse is hovering over,
+	 * bypassing the resetting Y-coordinates of native crosshair events.
+	 * @private
+	 */
+	private _currentGlobalPoint: Point | null = null;	
+
+	/**
 	 * Flag used to track if our supplemental crosshair time label is currently visible.
 	 * This is used to throttle requestUpdate() calls, ensuring we only trigger a 
 	 * chart repaint when the label's state actually changes.
@@ -121,6 +136,9 @@ export class InteractionManager<HorzScaleItem> {
 	 *    `interpolateTimeFromLogicalIndex` to linearly project the time forward from the last known candle.
 	 *
 	 * @param screenPoint - The screen coordinates as a {@link Point} object.
+	 * @param paneRelative - If `true`, the `screenPoint.y` is already relative to the active pane 
+	 *        (e.g., it came from LWC's native crosshair event). If `false` (default), the `y` is relative 
+	 *        to the entire chart container and needs to be adjusted downwards.
 	 * @returns A {@link LineToolPoint} containing a timestamp and price, or `null` if the conversion fails.
 	 */
 	public screenPointToLineToolPoint(screenPoint: Point): LineToolPoint | null {
@@ -132,7 +150,25 @@ export class InteractionManager<HorzScaleItem> {
 			? screenPoint.y 
 			: this._getSnappedY(screenPoint.x, screenPoint.y);
 
-		const price = this._series.coordinateToPrice(targetY as Coordinate);
+		// --- NEW: THE MULTI-PANE OFFSET NORMALIZATION ---
+		// coordinateToPrice() strictly expects a Y-value relative to the top of its own specific pane.
+		// Because targetY is chart-relative, we MUST subtract the physical distance
+		// between the top of the chart and the top of the pane.
+		let normalizedY = targetY - this._getActivePaneYOffset();
+
+		// --- NEW: BOUNDARY CLAMPING ---
+		// If the user drags the mouse into another pane, we clamp the Y-coordinate
+		// to the top or bottom of THIS pane. This creates a solid "wall" so the drawing 
+		// doesn't disappear or calculate wild prices in other panes.
+		const paneHeight = this._getActivePaneHeight();
+		if (normalizedY < 0) {
+			normalizedY = 0;
+		} else if (normalizedY > paneHeight) {
+			normalizedY = paneHeight;
+		}
+
+		const price = this._series.coordinateToPrice(normalizedY as Coordinate);			
+
 		const logical = timeScale.coordinateToLogical(screenPoint.x as Coordinate);
 	 
 		if (logical === null || price === null) {
@@ -161,7 +197,7 @@ export class InteractionManager<HorzScaleItem> {
 			timestamp: this._horzScaleBehavior.key(finalTime as HorzScaleItem) as number,
 			price: price as number,
 		};
-	}
+	}	
 
 
 	/**
@@ -178,6 +214,37 @@ export class InteractionManager<HorzScaleItem> {
 
 		//console.log(`[InteractionManager] Set _currentToolCreating to ${tool?.id() || 'null'}`);
 	}
+
+	/**
+	 * Sets the global lock state for all drawing interactions.
+	 *
+	 * When locked, all mouse interactions (creation, selection, editing, dragging,
+	 * hovering) are instantly suppressed. If an interaction is currently in progress
+	 * when the lock is engaged, it is safely aborted to prevent "ghost" tools from
+	 * remaining stuck on the screen.
+	 *
+	 * @param locked - `true` to lock all interactions, `false` to unlock.
+	 */
+	public setLocked(locked: boolean): void {
+		this._locked = locked;
+		
+		// If we are locking the chart, we must proactively clean up any ongoing gestures.
+		// For example, if the user is mid-drag on a rectangle and hits a shortcut key
+		// to lock the chart, we don't want the rectangle to freeze mid-draw.
+		if (locked) {
+			this._resetInteractionStateFully();
+		}
+	}
+
+	/**
+	 * Returns the current lock state of the Interaction Manager.
+	 * 
+	 * @returns `true` if interactions are locked, `false` otherwise.
+	 */
+	public isLocked(): boolean {
+		return this._locked;
+	}
+		
 
 	/**
 	 * Attaches a line tool primitive to the main series for rendering.
@@ -201,8 +268,16 @@ export class InteractionManager<HorzScaleItem> {
 		const chartElement = this._chart.chartElement();
 		
 		// 1. Raw DOM Events for Drag/Click Detection and Editing
-		chartElement.addEventListener('mousedown', this._handleMouseDown.bind(this));
-		chartElement.addEventListener('mousemove', this._handleMouseMove.bind(this));
+		//
+		// CRITICAL FIX: We pass `true` as the third argument to enable the "Capturing Phase".
+		// In complex multi-pane charts, internal LWC widgets (like pane dividers or indicator UI) 
+		// might call `event.stopPropagation()` on mouse events. If we rely on default "Bubbling",
+		// those events are swallowed before they reach our listener, causing tools to freeze 
+		// or ignore clicks. Capturing ensures we intercept the event *first*, before any other 
+		// layer can hide it.
+		chartElement.addEventListener('mousedown', this._handleMouseDown.bind(this), true);
+		chartElement.addEventListener('mousemove', this._handleMouseMove.bind(this), true);
+
 		window.addEventListener('mouseup', this._handleMouseUp.bind(this)); 
 		
 		// 2. LWC API Events for Ghosting/Hover/DBLClick
@@ -328,6 +403,12 @@ export class InteractionManager<HorzScaleItem> {
 		// 3. Ensure we have a valid candle with OHLC data.
 		if (!bar || typeof bar.close === 'undefined') return y;
 
+		// --- CRITICAL FIX: Coordinate Space Alignment ---
+		// The mouse `y` is Chart-Relative. 
+		// `priceToCoordinate` returns Pane-Relative.
+		// We must ADD the pane offset to the candle prices so we are measuring apples to apples.
+		const paneOffset = this._getActivePaneYOffset();		
+
 		// 4. Convert OHLC prices to screen Y-coordinates (pixels).
 		const prices = [
 			{ val: bar.close, type: 'C' },
@@ -337,7 +418,7 @@ export class InteractionManager<HorzScaleItem> {
 		];
 
 		const candidates = prices.map(p => ({
-			y: this._series.priceToCoordinate(p.val) as number,
+			y: (this._series.priceToCoordinate(p.val) as number) + paneOffset,
 			type: p.type
 		})).filter(c => c.y !== null);
 
@@ -419,6 +500,10 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleMouseDown(event: MouseEvent): void {
+
+		// Immediately reject any interaction if the chart is in read-only mode
+		if (this._locked) { return; }
+
 		const point = this._eventToPoint(event);
 		if (!point) { return; }
 
@@ -553,8 +638,16 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleMouseMove(event: MouseEvent): void {
+		// Stop tracking mouse movements and ghost points if locked
+		if (this._locked) { return; }
+
 		const point = this._eventToPoint(event);
 		if (!point) { return; }
+
+		// Keep a persistent record of the true global mouse position.
+		// This is critical for crosshair boundary checks and preventing
+		// cross-pane coordinate contamination.
+		this._currentGlobalPoint = point;		
 
 		// --- 1. Check for Drag Threshold (If any gesture is active) ---
 		if (this._isCreationGesture || this._draggedTool) {
@@ -815,6 +908,9 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleMouseUp(event: MouseEvent): void {
+		// Ignore mouse releases if the chart is locked
+		// (Any active gestures were already aborted when setLocked(true) was called)
+		if (this._locked) { return; }		
 
 		const point = this._eventToPoint(event);
 
@@ -1265,6 +1361,9 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleDblClick(params: MouseEventParams<HorzScaleItem>): void {
+		// Prevent double-click finalization or events if locked
+		if (this._locked) { return; }
+
 		const point = params.point ? new Point(params.point.x, params.point.y) : null;
 		if (!point) return;
 
@@ -1312,6 +1411,9 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleCrosshairMove(params: MouseEventParams<HorzScaleItem>): void {
+		// Prevent hover states, ghosting, and custom crosshairs if locked
+		if (this._locked) { return; }
+
 		// --- Passive Magnet Logic (Browsing & Edit Mode) ---
 		// We remove "!this._draggedTool" so that the crosshair remains 
 		// "glued" to the anchor handle while you are dragging/editing it.
@@ -1320,7 +1422,15 @@ export class InteractionManager<HorzScaleItem> {
 			// FIX: Only override if we are over actual data (params.time exists).
 			// This prevents the vertical line from jumping to the left in the blank space.
 			if (params.point && params.time) {
-				this._plugin.setCrossHairXY(params.point.x, params.point.y, true, params.time);
+				// --- CRITICAL MULTI-PANE FIX ---
+				// Only hijack the crosshair if the TRUE global mouse is ACTUALLY inside this plugin's pane.
+				// We ignore params.point.y because LWC resets it to 0 for every pane.
+				const globalY = this._currentGlobalPoint ? this._currentGlobalPoint.y : -1;
+				if (this._isMouseInActivePane(globalY)) {
+					// We pass the global point to setCrossHairXY because it relies on screenPointToLineToolPoint
+					const globalX = this._currentGlobalPoint ? this._currentGlobalPoint.x : params.point.x;
+					this._plugin.setCrossHairXY(globalX, globalY, true, params.time);
+				}			
 			}
 		}
 
@@ -1390,18 +1500,22 @@ export class InteractionManager<HorzScaleItem> {
 		// --- Ghosting Logic (Drawing Mode) ---
 		const toolBeingCreated = this._currentToolCreating;
 		if (toolBeingCreated) {
-			const rawScreenPoint = params.point ? new Point(params.point.x, params.point.y) : null;
+			// CRITICAL FIX: We completely abandon LWC's params.point for ghost geometry.
+			// It is pane-relative and ruins our math. We clone our true global point instead.
+			const rawScreenPoint = this._currentGlobalPoint ? this._currentGlobalPoint.clone() : null;
 
             // --- Single-Point Tool Ghosting (Pre-Click Ghosting) ---
             if (rawScreenPoint && toolBeingCreated.pointsCount === 1) {
                 // Single point tools are immediately completed on the first click.
                 // We use setLastPoint to visualize the *final* tool location pre-click.
+                
+				// Because rawScreenPoint is chart-relative, the math engine works flawlessly
                 const logicalPoint = this.screenPointToLineToolPoint(rawScreenPoint);
                 if (logicalPoint) {
 					// REFINEMENT: Force crosshair sync for 1-point tools (Horizontal/Vertical Lines)
-					// Only snap crosshair if we are over actual data
-					if (params.time) {
-						this._plugin.setCrossHairXY(params.point!.x, params.point!.y, true, params.time);
+					// Only snap crosshair if we are over actual data AND inside our pane
+					if (params.time && this._isMouseInActivePane(rawScreenPoint.y)) {
+						this._plugin.setCrossHairXY(rawScreenPoint.x, rawScreenPoint.y, true, params.time);
 					}
 
                     toolBeingCreated.setLastPoint(logicalPoint);
@@ -1461,11 +1575,12 @@ export class InteractionManager<HorzScaleItem> {
 			}
 
 			if (finalScreenPoint) {
+				// All points are chart-relative here, so the math is safe
 				const logicalPoint = this.screenPointToLineToolPoint(finalScreenPoint);
 
 				if (logicalPoint) {
 					// Use rawScreenPoint (already checked for null) instead of force-asserting params.point!
-					if (params.time && rawScreenPoint) {
+					if (params.time && rawScreenPoint && this._isMouseInActivePane(rawScreenPoint.y)) {
 						this._plugin.setCrossHairXY(rawScreenPoint.x, rawScreenPoint.y, true, params.time);
 					}
 
@@ -1485,9 +1600,10 @@ export class InteractionManager<HorzScaleItem> {
 		}
 
 		// --- Hover Logic (Hit Test Mode) ---
-		// We use the RAW params.point here. Hit-testing for tool selection should 
-		// always follow the physical mouse tip, not the snapped crosshair lines.
-		const point = params.point ? new Point(params.point.x, params.point.y) : null;
+		// We use our true global point. Hit-testing for tool selection should 
+		// always follow the physical mouse tip, and must use global coordinates
+		// so _hitTest can accurately subtract the pane offsets.
+		const point = this._currentGlobalPoint ? this._currentGlobalPoint.clone() : null;
 		const hitResult = point ? this._hitTest(point) : null;
 		const hoveredTool = hitResult ? hitResult.tool : null;
 
@@ -1516,8 +1632,16 @@ export class InteractionManager<HorzScaleItem> {
 			if(!tool.options().visible) {
 				continue;
 			}
- 
-			const hitResult = tool._internalHitTest(point.x, point.y);
+
+			// --- NEW: THE MULTI-PANE HIT TEST NORMALIZATION ---
+			// The tool's internal renderers calculate hits based on their local pane coordinates (Y=0 to Pane Height).
+			// Because `point.y` is currently relative to the top of the entire chart, we must subtract
+			// the distance from the top of the chart to the top of this specific tool's pane.
+			const toolPaneOffset = this._getPaneYOffsetForTool(tool);
+			const normalizedY = point.y - toolPaneOffset;
+
+			// Pass the adjusted Y coordinate down to the tool's renderer logic			
+			const hitResult = tool._internalHitTest(point.x, normalizedY as Coordinate);
 
 			if (hitResult) {
 				return { 
@@ -1555,6 +1679,141 @@ export class InteractionManager<HorzScaleItem> {
 			this._plugin.requestUpdate();
 		}
 	}
+
+	/**
+	 * Calculates the physical Y-offset (in CSS pixels) of the pane that currently holds `this._series`.
+	 * 
+	 * The offset is measured from the top of the main chart container.
+	 * For the main candlestick pane (Pane 0), this typically returns 0. 
+	 * For indicator panes (Pane 1, Pane 2, etc.), it returns the distance down the screen.
+	 * 
+	 * This is required because raw DOM mouse events provide coordinates relative to the 
+	 * entire chart, but the Series API expects coordinates relative to its own specific pane.
+	 * 
+	 * @private
+	 * @returns The Y offset in pixels.
+	 */
+	private _getActivePaneYOffset(): number {
+		try {
+			// 1. Get the bounding rectangle for the entire chart (our 0,0 reference point)
+			const chartRect = this._chart.chartElement().getBoundingClientRect();
+			
+			// 2. Ask the chart for all active panes
+			const panes = (this._chart as any).panes?.();
+			if (!panes) return 0;
+			
+			// 3. Iterate through all panes to find the one containing our plugin's primary series
+			for (const pane of panes) {
+				const series = pane.getSeries?.();
+				// If this pane owns our series...
+				if (series && series.indexOf(this._series) !== -1) {
+					// Get the DOM element for this specific pane
+					const paneEl = pane.getHTMLElement?.();
+					if (paneEl) {
+						// Calculate the difference between the pane's top and the chart's top
+						return paneEl.getBoundingClientRect().top - chartRect.top;
+					}
+					break;
+				}
+			}
+		} catch (e: any) {
+			console.warn('[InteractionManager] Error calculating active pane offset:', e.message);
+		}
+		// Fallback to 0 (assumes the series is in the main, top-level pane)
+		return 0;
+	}
+
+	/**
+	 * Calculates the physical height (in CSS pixels) of the pane that currently holds `this._series`.
+	 * 
+	 * This is used to clamp Y-coordinates so that drawings cannot be dragged 
+	 * out of their owner pane into adjacent panes.
+	 * 
+	 * @private
+	 * @returns The height in pixels, or a safe fallback number if unavailable.
+	 */
+	private _getActivePaneHeight(): number {
+		try {
+			const panes = (this._chart as any).panes?.();
+			if (!panes) return 10000; // Safe fallback
+
+			for (const pane of panes) {
+				const series = pane.getSeries?.();
+				if (series && series.indexOf(this._series) !== -1) {
+					const paneEl = pane.getHTMLElement?.();
+					if (paneEl) {
+						return paneEl.getBoundingClientRect().height;
+					}
+					break;
+				}
+			}
+		} catch (e: any) {
+			console.warn('[InteractionManager] Error calculating active pane height:', e.message);
+		}
+		return 10000; // Fallback
+	}
+
+
+	/**
+	 * Checks if a given chart-relative Y coordinate falls within the vertical bounds of this plugin's active pane.
+	 * 
+	 * Used to prevent plugins in other panes from hijacking the crosshair or responding to clicks 
+	 * that belong to a different pane.
+	 * 
+	 * @param y - The Y coordinate relative to the chart container.
+	 * @returns `true` if the mouse is inside the pane, `false` otherwise.
+	 */
+	private _isMouseInActivePane(y: number): boolean {
+		try {
+			const chartRect = this._chart.chartElement().getBoundingClientRect();
+			const panes = (this._chart as any).panes?.();
+			if (!panes) return true; // Fallback
+
+			for (const pane of panes) {
+				const series = pane.getSeries?.();
+				if (series && series.indexOf(this._series) !== -1) {
+					const paneEl = pane.getHTMLElement?.();
+					if (paneEl) {
+						const rect = paneEl.getBoundingClientRect();
+						const paneTop = rect.top - chartRect.top;
+						const paneBottom = paneTop + rect.height;
+						return y >= paneTop && y <= paneBottom;
+					}
+					break;
+				}
+			}
+		} catch { /* fallback */ }
+		return true; // Default to true if calculation fails to prevent freezing
+	}	
+
+	/**
+	 * Calculates the physical Y-offset of the specific pane a given tool is rendered in.
+	 * 
+	 * While usually identical to `_getActivePaneYOffset`, this method is necessary during 
+	 * iteration loops (like hit-testing) where tools might theoretically be spread across 
+	 * different panes, and we need the specific offset for the tool currently being evaluated.
+	 * 
+	 * @param tool - The specific BaseLineTool instance to measure.
+	 * @private
+	 * @returns The Y offset in pixels.
+	 */
+	private _getPaneYOffsetForTool(tool: BaseLineTool<HorzScaleItem>): number {
+		try {
+			const chartRect = this._chart.chartElement().getBoundingClientRect();
+			
+			// Ask the tool for the specific IPaneApi instance it discovered during attachment
+			const pane = tool.getPane();
+			const paneEl = pane?.getHTMLElement?.();
+			
+			if (paneEl) {
+				return paneEl.getBoundingClientRect().top - chartRect.top;
+			}
+		} catch (e: any) {
+			// This can happen if the tool is in the process of being detached or destroyed
+		}
+		// Fallback to 0
+		return 0;
+	}	
 
 	/**
 	 * Converts a raw browser `MouseEvent` (which uses screen coordinates) into a chart-relative

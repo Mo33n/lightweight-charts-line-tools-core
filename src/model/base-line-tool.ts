@@ -421,6 +421,15 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 			console.warn(`[BaseLineTool] Tool ${this.id()} attached to a series not found in any pane. This primitive relies on IPaneApi access.`);
 		}
 
+		// --- NEW: DYNAMIC SERIES PROPAGATION ---
+		// Propagate the fresh series reference to all pane views so they use the correct
+		// price scale for coordinate conversions. This prevents crashing during multi-pane drag/drop.
+		for (const pv of this._paneViews) {
+			if (pv.updateSeries) {
+				pv.updateSeries(param.series);
+			}
+		}		
+
 		console.log(`Tool ${this.toolType} with ID ${this.id()} attached to series.`);
 	}
 

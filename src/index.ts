@@ -151,6 +151,9 @@ function createDummyPluginApi(): ILineToolsPlugin {
 		clearCrossHair: dummyFn,
 		setMagnetThreshold: dummyFn,
 		setTimeFormatter: dummyFn,
+		// New Locking Dummy API
+		setLocked: dummyFn,
+		isLocked: dummyFnBoolean,		
 	};
 }
 

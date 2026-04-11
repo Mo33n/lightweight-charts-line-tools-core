@@ -44,7 +44,7 @@ export abstract class LineToolPaneView<HorzScaleItem> implements IUpdatablePaneV
      * Used for price-to-coordinate conversions.
      * @protected
      */
-    protected readonly _series: ISeriesApi<SeriesType, HorzScaleItem>;
+    protected _series: ISeriesApi<SeriesType, HorzScaleItem>;
 	
 
     /**
@@ -108,6 +108,19 @@ export abstract class LineToolPaneView<HorzScaleItem> implements IUpdatablePaneV
         this._rectangleRenderer = new RectangleRenderer<HorzScaleItem>();
         this._labelRenderer = new TextRenderer<HorzScaleItem>();
     }
+
+    /**
+     * Updates the series reference used for price-to-coordinate conversions.
+     * 
+     * This is called by the `BaseLineTool` when it is attached/re-attached to a series.
+     * It is critical for multi-pane setups where series instances might be swapped.
+     * 
+     * @param series - The fresh ISeriesApi instance.
+     */
+    public updateSeries(series: ISeriesApi<SeriesType, HorzScaleItem>): void {
+        this._series = series;
+        this._invalidated = true; // Force a recalculation of points using the new series
+    }    
 
     /**
      * Signals that the view's data or options have changed.

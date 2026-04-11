@@ -448,6 +448,30 @@ export interface ILineToolsApi {
 	 */
 	setTimeFormatter(formatter: (time: any) => string): void;	
 
+	/**
+	 * Sets the global interaction lock state for all drawing tools managed by this plugin instance.
+	 * 
+	 * When locked is set to `true`:
+	 * 1. All existing drawings become "read-only" (they cannot be moved, resized, or deleted via mouse).
+	 * 2. No new drawings can be initiated by the user.
+	 * 3. All selection and hover interaction effects are suppressed.
+	 * 4. Tools remain visible and will continue to update position if the chart scales or moves.
+	 * 
+	 * This is typically used to implement a "Lock Drawings" toggle in the application UI
+	 * to prevent accidental modifications while the user is analyzing the chart.
+	 * 
+	 * @param locked - `true` to disable interactions, `false` to enable them.
+	 * @returns void
+	 */
+	setLocked(locked: boolean): void;
+
+	/**
+	 * Retrieves the current interaction lock state of the plugin.
+	 * 
+	 * @returns `true` if the tools are currently in a read-only locked state, `false` otherwise.
+	 */
+	isLocked(): boolean;
+
 }
 
 // #endregion Main Plugin Interface

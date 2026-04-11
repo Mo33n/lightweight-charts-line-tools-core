@@ -834,6 +834,13 @@ export interface IUpdatablePaneView extends IPaneView {
 	 * @param updateType - Optional type of update ('data' | 'other' | 'options').
 	 */
 	update(updateType?: 'data' | 'other' | 'options'): void;
+
+	/**
+	 * Optional. Updates the view's internal reference to the series.
+	 * Crucial for multi-pane setups where the series API might be re-instantiated or moved.
+	 * @param series - The new ISeriesApi instance.
+	 */
+	updateSeries?(series: any): void; // We use 'any' here to avoid circular generic type complexity
 }
 
 

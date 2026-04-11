@@ -775,6 +775,29 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	 */
 	public getTimeFormatter(): ((time: any) => string) | null {
 		return this._customTimeFormatter;
+	}
+
+	/**
+	 * Sets the global interaction lock state for the plugin.
+	 * 
+	 * This implementation delegates the state management to the InteractionManager. 
+	 * If the chart is being locked, the manager will also handle the safety cleanup 
+	 * of any currently selected tools or active drawing gestures to ensure the 
+	 * UI doesn't get "stuck."
+	 * 
+	 * @param locked - `true` to disable all drawing and editing, `false` to restore interaction.
+	 */
+	public setLocked(locked: boolean): void {
+		this._interactionManager.setLocked(locked);
+	}
+
+	/**
+	 * Returns the current interaction lock state of the plugin.
+	 * 
+	 * @returns `true` if drawings are currently in read-only mode.
+	 */
+	public isLocked(): boolean {
+		return this._interactionManager.isLocked();
 	}	
 
 	// #endregion
