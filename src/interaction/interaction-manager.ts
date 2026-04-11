@@ -92,6 +92,16 @@ export class InteractionManager<HorzScaleItem> {
 	 */
 	private _crosshairSupplementalVisible: boolean = false;	
 
+	// --- Stable Event Listener References for Cleanup ---
+	private _isDestroyed: boolean = false;
+	private readonly _boundHandleMouseDown = (event: MouseEvent): void => this._handleMouseDown(event);
+	private readonly _boundHandleMouseMove = (event: MouseEvent): void => this._handleMouseMove(event);
+	private readonly _boundHandleMouseUp = (event: MouseEvent): void => this._handleMouseUp(event);
+	private readonly _boundHandleDblClick = (params: MouseEventParams<HorzScaleItem>): void => this._handleDblClick(params);
+	private readonly _boundHandleCrosshairMove = (params: MouseEventParams<HorzScaleItem>): void => this._handleCrosshairMove(params);
+	private readonly _boundHandleKeyDown = (event: KeyboardEvent): void => this._handleKey(event);
+	private readonly _boundHandleKeyUp = (event: KeyboardEvent): void => this._handleKey(event);
+
 	/**
 	 * Initializes the Interaction Manager, setting up all internal references and subscribing
 	 * to necessary DOM and Lightweight Charts events.
@@ -268,25 +278,71 @@ export class InteractionManager<HorzScaleItem> {
 		const chartElement = this._chart.chartElement();
 		
 		// 1. Raw DOM Events for Drag/Click Detection and Editing
-		//
-		// CRITICAL FIX: We pass `true` as the third argument to enable the "Capturing Phase".
-		// In complex multi-pane charts, internal LWC widgets (like pane dividers or indicator UI) 
-		// might call `event.stopPropagation()` on mouse events. If we rely on default "Bubbling",
-		// those events are swallowed before they reach our listener, causing tools to freeze 
-		// or ignore clicks. Capturing ensures we intercept the event *first*, before any other 
-		// layer can hide it.
-		chartElement.addEventListener('mousedown', this._handleMouseDown.bind(this), true);
-		chartElement.addEventListener('mousemove', this._handleMouseMove.bind(this), true);
+		// We use the stable arrow function references so we can remove them later.
+		// Note: 'true' enables the Capturing Phase to prevent event swallowing.
+		chartElement.addEventListener('mousedown', this._boundHandleMouseDown, true);
+		chartElement.addEventListener('mousemove', this._boundHandleMouseMove, true);
 
-		window.addEventListener('mouseup', this._handleMouseUp.bind(this)); 
+		window.addEventListener('mouseup', this._boundHandleMouseUp); 
 		
 		// 2. LWC API Events for Ghosting/Hover/DBLClick
-		this._chart.subscribeDblClick(this._handleDblClick.bind(this)); 
-		this._chart.subscribeCrosshairMove(this._handleCrosshairMove.bind(this));
+		this._chart.subscribeDblClick(this._boundHandleDblClick); 
+		this._chart.subscribeCrosshairMove(this._boundHandleCrosshairMove);
 
-		// Global Listeners for Persistent Key State **
-		window.addEventListener('keydown', this._handleKey.bind(this));
-		window.addEventListener('keyup', this._handleKey.bind(this));
+		// Global Listeners for Persistent Key State
+		window.addEventListener('keydown', this._boundHandleKeyDown);
+		window.addEventListener('keyup', this._boundHandleKeyUp);
+	}
+
+	/**
+	 * Releases all chart, window, and DOM listeners owned by this interaction manager.
+	 *
+	 * This method ensures that all event listeners are removed using the exact same 
+	 * references and capturing flags that were used during registration. It also 
+	 * resets active interaction states and severs internal API references to 
+	 * ensure the chart and series can be fully garbage collected.
+	 *
+	 * @returns void
+	 */
+	public destroy(): void {
+		if (this._isDestroyed) { return; }
+		this._isDestroyed = true;
+
+		const chartElement = this._chart.chartElement();
+
+		// 1. Remove DOM Listeners
+		// CRITICAL: removeEventListener requires the exact same 'true' flag 
+		// that was used in addEventListener to successfully kill the listener.
+		chartElement.removeEventListener('mousedown', this._boundHandleMouseDown, true);
+		chartElement.removeEventListener('mousemove', this._boundHandleMouseMove, true);
+
+		window.removeEventListener('mouseup', this._boundHandleMouseUp);
+		window.removeEventListener('keydown', this._boundHandleKeyDown);
+		window.removeEventListener('keyup', this._boundHandleKeyUp);
+
+		// 2. Remove Chart Subscriptions
+		this._chart.unsubscribeDblClick(this._boundHandleDblClick);
+		this._chart.unsubscribeCrosshairMove(this._boundHandleCrosshairMove);
+
+		// 3. Abort any active creation or editing gestures
+		this._resetInteractionStateFully();
+		
+		// 4. SEVER THE GUTS
+		// Since the Manager is a helper class and not a Primitive, we must 
+		// manually null these to break circular references and allow the 
+		// Chart/Series to be reclaimed by the Garbage Collector.
+		(this._chart as any) = null;
+		(this._series as any) = null;
+		(this._horzScaleBehavior as any) = null;
+		(this._plugin as any) = null;
+		(this._tools as any) = null;
+		(this._toolRegistry as any) = null;
+
+		// 5. Clear local references
+		this._hoveredTool = null;
+		this._selectedTool = null;
+		this._currentToolCreating = null;
+		this._currentGlobalPoint = null;
 	}
 
 	/**

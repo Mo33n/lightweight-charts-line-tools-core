@@ -472,6 +472,23 @@ export interface ILineToolsApi {
 	 */
 	isLocked(): boolean;
 
+	/**
+	 * Completely destroys the line tools plugin instance and cleans up all associated memory.
+	 * 
+	 * After this call, the plugin instance transforms itself into a no-op dummy object.
+	 * All public methods will remain callable but will do nothing and return safe values,
+	 * preventing application crashes while allowing the engine to be fully garbage collected.
+	 * 
+	 * The destruction sequence includes:
+	 * 1. Removing all currently drawn line tools from the chart.
+	 * 2. Unbinding all internal mouse and keyboard event listeners from the DOM.
+	 * 3. Detaching the core plugin's rendering primitives (like the crosshair label) from the series.
+	 * 4. Severing all internal references to the Lightweight Charts API to allow garbage collection.
+	 * 
+	 * @returns void
+	 */
+	destroy(): void;
+
 }
 
 // #endregion Main Plugin Interface

@@ -15,6 +15,8 @@ import {
 	PrimitiveHoveredItem
 } from 'lightweight-charts';
 
+import { createDummyPluginApi } from './index';
+
 import {
 	ILineToolsApi,
 	LineToolExport,
@@ -78,6 +80,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 
 	// Throttled Stacking Update
 	private _stackingUpdateScheduled: boolean = false;
+	private _isDestroyed: boolean = false; // Flag to block logic after destruction
 
 	public constructor(
 		chart: IChartApiBase<HorzScaleItem>,
@@ -798,6 +801,74 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	 */
 	public isLocked(): boolean {
 		return this._interactionManager.isLocked();
+	}
+
+	/**
+	 * Completely destroys the line tools plugin instance and cleans up all associated memory.
+	 * 
+	 * This orchestrates a "Full Uninstall" sequence:
+	 * 1. Safely removes all active drawing tools and clears their individual states.
+	 * 2. Unbinds all internal mouse/keyboard event listeners in the Interaction Manager.
+	 * 3. Clears all event delegates to release user-provided callbacks from memory.
+	 * 4. Detaches the core plugin itself from the rendering engine.
+	 * 5. Transforms the instance into a no-op dummy by overwriting its own API methods.
+	 * 6. Severs all internal references to the chart and series to allow garbage collection.
+	 * 
+	 * @returns void
+	 */
+	public destroy(): void {
+		if (this._isDestroyed) { return; }
+		console.log('[CorePlugin] Initiating logical destruction...');
+		
+		// 1. Mark as destroyed immediately to prevent re-entry
+		this._isDestroyed = true;
+
+		// 2. Clean up all drawn tools (triggers their individual destroy methods)
+		this.removeAllLineTools();
+		this._tools.clear();
+
+		// 3. Kill the Interaction Manager (removes all listeners and severs its guts)
+		this._interactionManager.destroy();
+
+		// 4. Kill the Delegates
+		// This releases any user-provided callback functions from memory to prevent closure leaks.
+		this._doubleClickDelegate.destroy();
+		this._afterEditDelegate.destroy();
+		this._selectSingleClickDelegate.destroy();
+
+		// 5. Clean up the core plugin's primitive from the series (crosshair view)
+		try {
+			// Officially tell Lightweight Charts to stop using this plugin
+			this._series.detachPrimitive(this);
+		} catch (e: any) {
+			// Fail silently if already detached or series is gone
+		}
+
+		// 6. SELF-NEUTERING: Transform into a Dummy
+		// We obtain a fresh set of no-op functions from our dummy API factory.
+		const dummyApi = createDummyPluginApi();
+
+		// We iterate over every key in the dummy API and overwrite our own methods.
+		// This ensures that any external code still holding a reference to this 
+		// specific plugin instance will call "do nothing" functions instead of crashing.
+		Object.keys(dummyApi).forEach((key) => {
+			const member = (dummyApi as any)[key];
+			if (typeof member === 'function') {
+				(this as any)[key] = member;
+			}
+		});
+
+		// 7. SEVER THE GUTS
+		// Now that the methods are swapped, they no longer reference 'this._chart'.
+		// We can safely null out these references so the browser can reclaim the memory.
+		(this._chart as any) = null;
+		(this._series as any) = null;
+		(this._horzScaleBehavior as any) = null;
+		(this._priceAxisLabelStackingManager as any) = null;
+		(this._crosshairTimeView as any) = null;
+		(this._customTimeFormatter as any) = null;
+
+		console.log('[CorePlugin] Plugin has been fully uninstalled and neutered.');
 	}	
 
 	// #endregion

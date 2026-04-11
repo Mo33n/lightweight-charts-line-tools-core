@@ -111,7 +111,7 @@ export function createLineToolsPlugin<HorzScaleItem>(
  * @private
  * @returns A safe, non-functional `ILineToolsPlugin` object.
  */
-function createDummyPluginApi(): ILineToolsPlugin {
+export function createDummyPluginApi(): ILineToolsPlugin {
 	const dummyFn = () => { console.error('Line Tools Plugin not initialized correctly.'); };
 	const dummyFnString = () => { console.error('Line Tools Plugin not initialized correctly.'); return '[]'; };
 	const dummyFnBoolean = () => { console.error('Line Tools Plugin not initialized correctly.'); return false; };
@@ -151,9 +151,11 @@ function createDummyPluginApi(): ILineToolsPlugin {
 		clearCrossHair: dummyFn,
 		setMagnetThreshold: dummyFn,
 		setTimeFormatter: dummyFn,
-		// New Locking Dummy API
+		// Locking Dummy API
 		setLocked: dummyFn,
-		isLocked: dummyFnBoolean,		
+		isLocked: dummyFnBoolean,
+		// Destroy Dummy API
+		destroy: dummyFn,	
 	};
 }
 
