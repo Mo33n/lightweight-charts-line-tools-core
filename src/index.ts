@@ -11,6 +11,7 @@ import { LineToolsCorePlugin } from './core-plugin';
 import { BaseLineTool } from './model/base-line-tool';
 import { ILineToolsApi } from './api/public-api';
 import { LineToolType, IChartWidgetBase } from './types';
+import { createDummyPluginApi } from './api/dummy-api';
 
 
 /**
@@ -100,65 +101,6 @@ export function createLineToolsPlugin<HorzScaleItem>(
 		return createDummyPluginApi();
 	}
 }
-
-/**
- * Creates a no-op (dummy) implementation of the plugin API.
- *
- * This is used internally as a fallback when the plugin fails to initialize (e.g., due to missing
- * chart or series arguments). It ensures that subsequent calls to the plugin API do not throw
- * "undefined" errors, but instead log a warning to the console.
- *
- * @private
- * @returns A safe, non-functional `ILineToolsPlugin` object.
- */
-export function createDummyPluginApi(): ILineToolsPlugin {
-	const dummyFn = () => { console.error('Line Tools Plugin not initialized correctly.'); };
-	const dummyFnString = () => { console.error('Line Tools Plugin not initialized correctly.'); return '[]'; };
-	const dummyFnBoolean = () => { console.error('Line Tools Plugin not initialized correctly.'); return false; };
-	const dummyFnNull = () => { console.error('Line Tools Plugin not initialized correctly.'); return null; };
-	const dummyFnArray = () => { console.error('Line Tools Plugin not initialized correctly.'); return []; };
-
-	return {
-		registerLineTool: dummyFn,
-		addLineTool: () => { console.error('Line Tools Plugin not initialized correctly.'); return ''; },
-		createOrUpdateLineTool: dummyFn,
-		removeLineToolsById: dummyFn,
-		removeLineToolsByIdRegex: dummyFn,
-		removeSelectedLineTools: dummyFn,
-		removeAllLineTools: dummyFn,
-		getSelectedLineTools: dummyFnString,
-		getLineToolByID: dummyFnString,
-		getLineToolsByIdRegex: dummyFnString,
-		applyLineToolOptions: dummyFnBoolean,
-		exportLineTools: dummyFnString,
-		importLineTools: dummyFnBoolean,
-		// --- Data Fetching Dummy API ---
-		getDataInRange: dummyFnArray,
-		getBarAtTime: dummyFnNull,
-		getClosestBar: dummyFnNull,
-		getBarAtCoordinate: dummyFnNull,
-		getEarliestBar: dummyFnNull,
-		getLatestBar: dummyFnNull,
-		getFullTimeRange: dummyFnNull,
-		// --- Interaction Dummy API ---
-		subscribeLineToolsDoubleClick: dummyFn,
-		unsubscribeLineToolsDoubleClick: dummyFn,
-		subscribeLineToolsAfterEdit: dummyFn,
-		unsubscribeLineToolsAfterEdit: dummyFn,
-		subscribeLineToolsSingleClick: dummyFn,
-		unsubscribeLineToolsSingleClick: dummyFn,		
-		setCrossHairXY: dummyFn,
-		clearCrossHair: dummyFn,
-		setMagnetThreshold: dummyFn,
-		setTimeFormatter: dummyFn,
-		// Locking Dummy API
-		setLocked: dummyFn,
-		isLocked: dummyFnBoolean,
-		// Destroy Dummy API
-		destroy: dummyFn,	
-	};
-}
-
 
 // Re-export all public types and interfaces for easy consumption by the end-user.
 // This allows for convenient imports like `import { LineToolPoint, ILineToolsPlugin } from 'lightweight-charts-line-tools-core';`

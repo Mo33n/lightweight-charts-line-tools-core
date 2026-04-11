@@ -15,7 +15,7 @@ import {
 	PrimitiveHoveredItem
 } from 'lightweight-charts';
 
-import { createDummyPluginApi } from './index';
+import { createDummyPluginApi } from './api/dummy-api';
 
 import {
 	ILineToolsApi,
