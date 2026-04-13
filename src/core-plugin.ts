@@ -757,16 +757,33 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	}
 
 	/**
-	 * Configures a custom formatter for the time labels of all line tools.
+	 * Configures a custom formatter for the time labels.
 	 * 
-	 * Setting this will override both the chart's internal localization 
-	 * and the default scale behavior formatting for line tools.
+	 * [v1.1 MASTER SETTER]
+	 * This method acts as a synchronization proxy. It updates the chart's native 
+	 * localization while storing the formatter for the plugin's internal 
+	 * "Gap Repair" engine. By updating both, we ensure that the crosshair 
+	 * looks identical over data candles (handled by the chart) and in the 
+	 * blank space (handled by the plugin).
 	 * 
-	 * @param formatter - The formatting function.
+	 * @param formatter - The formatting function, or null to revert to defaults.
 	 */
-	public setTimeFormatter(formatter: (time: any) => string): void {
+	public setTimeFormatter(formatter: ((time: any) => string) | null): void {
 		this._customTimeFormatter = formatter;
-		// Trigger an update to refresh all labels immediately
+
+		// 1. Synchronize the native chart options.
+		// Providing a formatter here causes LWC v5 to go "silent" in the 
+		// blank space, which our InteractionManager is designed to repair.
+		// We use 'as any' to force the reset signal (null) through the 
+		// TypeScript definitions, as 'null' is the runtime trigger for 
+		// LWC to clear its internal override and return to stock defaults.
+		this._chart.applyOptions({
+			localization: {
+				timeFormatter: formatter as any,
+			},
+		});
+
+		// 2. Trigger an update to refresh all tool labels and the crosshair immediately.
 		this.requestUpdate();
 	}
 

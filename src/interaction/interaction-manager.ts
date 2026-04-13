@@ -1491,51 +1491,62 @@ export class InteractionManager<HorzScaleItem> {
 		}
 
 		// --- Supplemental Crosshair Label Logic (Blank Space) ---
+		// This block is the "Guarantor of Consistency". It ensures that the future/past 
+		// space is NEVER empty and ALWAYS matches the formatting logic of the data area.
 		if (params.point && !params.time) {
-			// Mouse is in the extrapolated blank space (future/past)
-			// Step 1: Resolve the raw logical index from the mouse X coordinate.
+			// 1. Resolve the raw logical index from the mouse X coordinate.
 			const logical = this._chart.timeScale().coordinateToLogical(params.point.x as Coordinate);
  
 			if (logical !== null) {
-				// We already imported interpolateTimeFromLogicalIndex at the top of the file
-				// Step 2: Extrapolate the "Virtual" timestamp for this index.
+				// 2. Extrapolate the "Virtual" timestamp for this index.
 				const interpolatedTime = interpolateTimeFromLogicalIndex(this._chart, this._series, logical);
  
 				if (interpolatedTime !== null) {
-					// Step 3: Format the timestamp based on high-priority localizers.
 					const timeAsHorzScaleItem = interpolatedTime as unknown as HorzScaleItem;
+					
+					// 3. Retrieve the current formatting state from the Plugin and the Chart.
 					const pluginFormatter = this._plugin.getTimeFormatter();
 					const chartFormatter = this._chart.options().localization.timeFormatter;
- 
+
 					let text = '';
+
+					// 4. THE MIRROR HIERARCHY: Resolve the string content.
+					// This hierarchy ensures the crosshair looks identical across the whole scale.
+					
 					if (pluginFormatter) {
+						// Priority 1: User set a specific override via the plugin.
 						text = pluginFormatter(timeAsHorzScaleItem);
-					} else if (chartFormatter) {
+					} 
+					else if (chartFormatter) {
+						// Priority 2: Full Coverage Mirror.
+						// If the plugin memory is empty, we "steal" the chart's native 
+						// formatter to repair the silence LWC v5 has in the blank space.
 						text = chartFormatter(timeAsHorzScaleItem);
-					} else {
+					}
+					else {
+						// Priority 3: The Universal Fallback.
+						// If no formatters are set anywhere, we manually use the chart's 
+						// internal scale behavior to generate the stock default text.
 						const internalItem = this._horzScaleBehavior.convertHorzItemToInternal(timeAsHorzScaleItem);
 						text = this._horzScaleBehavior.formatHorzItem(internalItem);
 					}
 
-					// STEP 4: Calculate the Snapped Coordinate.
-					// To match the native chart behavior, the crosshair label should not 
-					// slide smoothly with the mouse. We round the fractional logical index 
-					// to the nearest integer (the center of the virtual candle) and 
-					// map that back to a pixel X coordinate. This ensures the label 
-					// "jumps" discretely between intervals.
+					// 5. PIXEL SNAPPING: Calculate the discrete X-coordinate.
+					// We round the logical index to the nearest integer so the label 
+					// "jumps" between intervals, matching the native chart feel.
 					const snappedLogical = Math.round(logical);
 					const snappedX = this._chart.timeScale().logicalToCoordinate(snappedLogical as Logical);
 
 					if (snappedX !== null) {
-						// Push the data to our custom view. Note: tickVisible is false in that view.
+						// Update the supplemental view with the final text and snapped position.
 						this._plugin.updateCrosshairTimeLabel(text, snappedX as Coordinate, true);
 						
-						// Request an update only if we were previously hidden or position changed.
+						// Set the visibility flag and request a single repaint.
 						this._crosshairSupplementalVisible = true; 
 						this._plugin.requestUpdate();
 					}
 				} else {
-					// Safety check: only clear and update if the label was previously active.
+					// Cleanup: The mouse is too far out of bounds to interpolate a valid time.
 					if (this._crosshairSupplementalVisible) {
 						this._plugin.updateCrosshairTimeLabel('', 0 as Coordinate, false);
 						this._crosshairSupplementalVisible = false;
@@ -1544,8 +1555,8 @@ export class InteractionManager<HorzScaleItem> {
 				}
 			}
 		} else {
-			// MOUSE OVER DATA: Hide the custom label so the native LWC label can show.
-			// We use the visibility flag to ensure we only call requestUpdate() once.
+			// MOUSE OVER DATA: Hide our supplemental label so the chart's 
+			// native crosshair label can show without interference.
 			if (this._crosshairSupplementalVisible) {
 				this._plugin.updateCrosshairTimeLabel('', 0 as Coordinate, false);
 				this._crosshairSupplementalVisible = false;
