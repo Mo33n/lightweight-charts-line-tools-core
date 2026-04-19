@@ -132,6 +132,13 @@ export abstract class LineToolPaneView<HorzScaleItem> implements IUpdatablePaneV
      */
     public update(updateType?: 'data' | 'other' | 'options'): void {
         this._invalidated = true;
+
+        // If this update was triggered specifically by an options change, 
+		// we must force our renderers to bypass their internal reference caches.
+		// This is necessary because the model mutates options in-place.
+		if (updateType === 'options') {
+			this._labelRenderer.forceInvalidate();
+		}
     }
 
     /**
@@ -311,7 +318,7 @@ export abstract class LineToolPaneView<HorzScaleItem> implements IUpdatablePaneV
         const backgroundColor = chartOptions.layout.background;
 
         // Apply a color based on the chart's background type
-        const defaultAnchorColor = backgroundColor.type === 'solid' ? backgroundColor.color : 'transparent';
+        const defaultAnchorColor = backgroundColor.type === 'solid' ? backgroundColor.color : 'rgba(0, 0, 0, 0)';
         
         return points.map(point => defaultAnchorColor);
     }

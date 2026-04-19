@@ -805,7 +805,9 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	 */
 	public applyOptions(options: DeepPartial<LineToolOptionsInternal<any>>): void {
 		merge(this._options, options);
-		this.updateAllViews();
+		// By passing 'options' here, we tell the views and renderers to 
+		// ignore their reference-based caches and perform a full re-layout.
+		this.updateAllViews('options');
 		this._requestUpdate?.();
 	}
 	
@@ -903,16 +905,17 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	 *
 	 * This method automatically triggers the synchronous update of the {@link PriceAxisLabelStackingManager}
 	 * to ensure correct vertical placement of labels before the next render.
-	 *
+	 * 
+	 * @param updateType - Optional hint about what changed ('data', 'options', etc.) to assist views with optimized cache clearing.
 	 * @returns void
 	 */
-	public updateAllViews(): void {
+	public updateAllViews(updateType?: 'data' | 'other' | 'options'): void {
 
 		// Synchronously update the culling state before views are notified ---
 		this.updateCullingState();
 
 		// Update the main pane view(s) for the tool's body (the line, rectangle, etc.)
-		this._paneViews.forEach(view => view.update());
+		this._paneViews.forEach(view => view.update(updateType));
 
 		// For tools with a dynamic number of points (like Brush or Path),
 		// the logic to match the number of views to points would go here.

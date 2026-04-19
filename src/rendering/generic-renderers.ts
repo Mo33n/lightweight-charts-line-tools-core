@@ -675,6 +675,7 @@ export class TextRenderer<HorzScaleItem> implements IPaneRenderer {
 	protected _boxSize: BoxSize | null = null;
 	// _data is already present from previous implementation
 	protected _data: TextRendererData | null = null;
+	private _forceInvalidate: boolean = false; 
 
 	protected _hitTest: HitTestResult<LineToolHitTestData>; // Uses LineToolHitTestData now
 	private _mediaSize: { width: number; height: number; } = { width: 0, height: 0 }; // Still needed for screen dimensions
@@ -690,10 +691,18 @@ export class TextRenderer<HorzScaleItem> implements IPaneRenderer {
 	}
 
 	/**
+	 * Forces the renderer to ignore its internal cache during the next setData call.
+	 */
+	public forceInvalidate(): void {
+		this._forceInvalidate = true;
+	}	
+
+	/**
 	 * Sets the data payload required to draw and hit-test the text.
 	 *
-	 * This method is complex as it includes logic to **invalidate internal caches** (`_linesInfo`, `_boxSize`, etc.)
-	 * only when the relevant parts of the new data differ from the old data.
+	 * This method includes logic to invalidate internal caches only when the relevant 
+	 * parts of the new data differ from the old data, or if a manual invalidation 
+	 * has been requested via forceInvalidate().
 	 *
 	 * @param data - The {@link TextRendererData} containing the content and styling.
 	 * @returns void
@@ -745,10 +754,15 @@ export class TextRenderer<HorzScaleItem> implements IPaneRenderer {
 				&& before.hitTestBackground === after.hitTestBackground;
 		}
 
-		if (checkUnchanged(this._data, data)) {
+		// LOGIC: If the tripwire is NOT set and nothing has changed geometrically, we keep the cache.
+		if (!this._forceInvalidate && checkUnchanged(this._data, data)) {
 			this._data = data; // If unchanged, just reassign for reference consistency
 		} else {
 			this._data = data; // Assign new data
+
+			// Reset the tripwire so we don't clear the cache on every subsequent frame.
+			this._forceInvalidate = false; 
+
 			// Invalidate all caches
 			this._polygonPoints = null;
 			this._internalData = null;
@@ -962,7 +976,7 @@ export class TextRenderer<HorzScaleItem> implements IPaneRenderer {
 			// 3. Reset shadow properties BEFORE drawing the border, so the border itself doesn't cast a shadow
 			// and so the shadow only appears from the filled background.
 			if (shadowApplied) { // Only reset if shadow was applied
-				ctx.shadowColor = 'transparent';
+				ctx.shadowColor = 'rgba(0, 0, 0, 0)';
 				ctx.shadowBlur = 0;
 				ctx.shadowOffsetX = 0;
 				ctx.shadowOffsetY = 0;
