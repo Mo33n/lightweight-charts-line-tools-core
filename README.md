@@ -135,13 +135,34 @@ The core orchestrator is built to handle the heavy lifting of chart interactions
 *   **Bespoke Hit-Testing:** Granular control over hit-test areas, allowing you to prioritize specific parts of a tool (like a border, text box, or background fill) for user to click and edit the tool.
 
 
-
-
-
-
 # 📖 Public API Reference
 
 The following methods are implemented by the Core and are accessible via the plugin instance. These are the methods that a front end user would utilize.
+
+## Data Fetching API (OHLC & Time)
+
+#### `getDataInRange({ from, to })`
+Retrieves all native series data objects (OHLC) found within the requested range.
+- *Example:* `const bars = plugin.getDataInRange({ from: 1672531200, to: 1672617600 });`
+
+#### `getBarAtTime(time)`
+Retrieves a single data row at a specific timestamp. Returns `null` if no exact match is found.
+
+#### `getClosestBar(time, mode)`
+Finds the data row closest to a target timestamp based on a specific search strategy:
+- **'exact'**: Returns data only if the timestamp matches perfectly.
+- **'floor'**: Returns the nearest bar at or **before** the target time. (Essential for cross-timeframe syncing, e.g., finding a 15m candle from a 1m timestamp).
+- **'ceil'**: Returns the nearest bar at or **after** the target time.
+- **'nearest'**: Returns the absolute closest bar in either direction.
+
+#### `getBarAtCoordinate(x)`
+Retrieves the data row located at a specific pixel X-coordinate on the chart.
+
+#### `getEarliestBar()` / `getLatestBar()`
+Ultra-fast lookups to retrieve the first or last bar currently loaded in the series. These are **Instant Lookups** (Constant-speed), meaning they find the data immediately without searching through the entire dataset.
+
+#### `getFullTimeRange()`
+Returns an object `{ from, to }` representing the total time range covered by the loaded data.
 
 ## Tool Registration & Creation
 
@@ -172,6 +193,25 @@ Retrieves the data for a specific tool by its unique ID (returned as a JSON stri
 #### `getLineToolsByIdRegex(regex)`
 Retrieves a list of tools whose IDs match a specific Regular Expression.
 
+## Global Settings & Control
+
+#### `setMagnetThreshold(pixels)`
+Sets the snapping tolerance for the crosshair and tool anchors. Set to `0` to disable. Holding shift on shift enabled line tools disables snapping and will be constrained to the appropriate price the shift logic chooses.
+- *Example:* `plugin.setMagnetThreshold(10);` // Snaps when within 10 pixels of OHLC.
+
+#### `setTimeFormatter(formatter)`
+Configures a custom formatter for time axis labels. The core uses a **Tiered Priority**:
+1. **User Formatter:** (Provided here)
+2. **Chart Localization:** (`localization.timeFormatter` in chart options)
+3. **Scale Fallback:** (Internal scale behavior defaults)
+
+#### `setLocked(locked)`
+Sets the global interaction lock. When `true`, existing tools cannot be moved/deleted and new tools cannot be drawn.
+
+#### `isLocked()`
+Returns `true` if drawings are currently in read-only mode.
+
+
 ## Removal & Cleanup
 
 #### `removeLineToolsById(ids[])`
@@ -186,6 +226,10 @@ Removes the currently selected line tool(s). "Delete" key is not supported, you 
 #### `removeAllLineTools()`
 Clears every single line tool managed by the plugin from the chart, and wipes any trace of it.
 
+#### `destroy()`
+**The Master Kill Switch.** Completely uninstalls the plugin, kills all global event listeners, and hotswaps all methods with dummies to prevent memory leaks. Use this when unmounting your chart component.
+
+
 ## State Persistence
 
 #### `exportLineTools()`
@@ -194,26 +238,82 @@ Serializes the state of all current tools into a JSON string. Perfect for saving
 #### `importLineTools(json)`
 Imports a set of line tools from a JSON string. This is non-destructive; it updates existing IDs and creates new ones. You could export, save it, remove all, then recall the saved export and then import it.
 
-### Event Subscriptions (V3.8 Compatibility)
+### Event Subscriptions
 
-#### `subscribeLineToolsAfterEdit(handler)`
+#### `subscribeLineToolsAfterEdit(handler)` / `unsubscribeLineToolsAfterEdit(handler)`
 Fires when a line tool is modified, moved, or finished being created. This is the recommended hook for triggering an "Auto-Save" to your backend.
 
-#### `subscribeLineToolsDoubleClick(handler)`
+#### `subscribeLineToolsDoubleClick(handler)` / `unsubscribeLineToolsDoubleClick(handler)`
 Fires when a user double-clicks an existing tool. Often used to open a custom "Properties" or "Settings" modal.
+
+#### `subscribeLineToolsSingleClick(handler)` / `unsubscribeLineToolsSingleClick(handler)`
+Fires when a tool is selected or when the current selection is cleared.
 
 ## Manual Crosshair Control
 
-#### `setCrossHairXY(x, y, visible)`
-Programmatically positions the chart crosshair using screen pixel coordinates. The Core handles the conversion to logical time and price using its internal interpolation engine. You could potentially have multiple charts and sync the crosshair.
+#### `setCrossHairXY(x, y, visible, providedTime?)`
+Programmatically positions the chart crosshair using screen pixel coordinates. The Core handles the conversion to logical time and price using its internal interpolation engine. 
+
+- **`x`, `y`**: The screen pixel coordinates relative to the chart container.
+- **`visible`**: Controls the visibility of the crosshair.
+- **`providedTime`**: (Optional) For high-performance synchronization. Pass the raw timestamp/time object from a source chart event here. This bypasses pixel-to-time estimation and prevents the vertical crosshair line from "jumping" or jittering when syncing across multiple chart instances with different scales or zooms.
 
 #### `clearCrossHair()`
 Clears the chart's crosshair, making it invisible.
 
+## 🖼️ Multi-Pane Setup
+
+To support multiple panes, you must create a separate Core Plugin instance for each series. This ensures that coordinate math, height clamping, and "Drawing Silos" are handled correctly for each specific area of the chart.
+
+```typescript
+import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
+import { createLineToolsPlugin } from 'lightweight-charts-line-tools-core';
+import { LineToolRectangle } from 'lightweight-charts-line-tools-rectangle';
+
+const chart = createChart(document.getElementById('chart-container'), {
+	// ... chart options
+});
+
+// 1. Create the Main Price Series (Pane 0 by default)
+const mainSeries = chart.addSeries(
+    CandlestickSeries,
+    {},
+    0 // Pane index
+);
+
+// 2. Create an Indicator Series in a New Pane (Pane 1)
+// Note: The Pane Index is the 3rd argument of addSeries
+const rsiSeries = chart.addSeries(
+	LineSeries, 
+	{ title: 'RSI' }, 
+	1 // Pane index
+);
+
+// 3. Initialize a Core Orchestrator for each Series
+// Each instance will independently manage the drawings for its own pane.
+const lineToolsMain = createLineToolsPlugin(chart, mainSeries);
+const lineToolsRSI = createLineToolsPlugin(chart, rsiSeries);
+
+// 4. Register tools for both instances
+lineToolsMain.registerLineTool('Rectangle', LineToolRectangle);
+lineToolsRSI.registerLineTool('Rectangle', LineToolRectangle);
+
+// 5. Usage
+// This rectangle is mathematically trapped in the Main Pane (Pane 0)
+lineToolsMain.addLineTool('Rectangle');
+
+// This rectangle is mathematically trapped in the RSI Pane (Pane 1)
+lineToolsRSI.addLineTool('Rectangle');
+```
+
 ## 🏗 Architectural Deep Dive
 
-### Coordinate Interpolation (The "Blank Space" Logic)
-The Core uses linear interpolation to map screen pixels to logical time and price even in the "blank space"—the future area to the right of the data where no bars exist. You can draw a line tool anywhere.
+### 3-Zone Interpolation Engine
+The Core uses a high-precision 3-Zone engine to map screen pixels to logical time and price. This ensures drawings remain perfectly pinned regardless of zoom or timeframe changes.
+
+*   **Zone 1: Native History (The Truth):** Snaps coordinates to the exact timestamp of existing data bars.
+*   **Zone 2: Fractional History (Timeframe Immunity):** If you draw between bars (e.g., on a 1-hour chart), the Core interpolates the fractional position. This allows a tool drawn on a 1-minute timeframe to maintain its exact visual proportions when viewed on a Daily chart, even if it sits "inside" a single daily candle.
+*   **Zone 3: Verified Blank Space (Future/Past):** When drawing in the empty space where no data exists, the Core performs a **10-Bar Verification**. It probes the last 10 candles to "prove" the chart's true time interval, allowing it to project coordinates forward while gracefully gliding over weekend gaps and overnight halts.
 
 ### Culling Engine (AABB & Sub-Segments)
 The Core implements an advanced culling engine. It uses Axis-Aligned Bounding Box (AABB) tests for simple shapes and robust line-segment intersection tests for infinite lines (Rays, Extended Lines), ensuring only visible primitives are rendered on screen.
@@ -223,3 +323,17 @@ The `PriceAxisLabelStackingManager` monitors all active price labels. When label
 
 ### Interaction Manager
 A centralized event-bus that manages global DOM listeners. It handles selection logic, drag-thresholds (preventing accidental moves), and the enforcement of Shift-key geometric constraints (like axis-locking).
+
+### Multi-Pane Isolation & Silos
+The Core is built for complex multi-pane layouts (e.g., Main Price Pane + RSI Pane + MACD Pane). 
+- **Drawing Silos:** By initializing a specific Core instance for each series, you create "Silos." A rectangle drawn in the RSI pane is mathematically trapped there; it cannot bleed into the Main Price pane.
+- **Coordinate Normalization:** The Core automatically detects the Y-axis offset and height of the specific pane it lives in. It handles all the complex math to translate global mouse coordinates into pane-local prices, including boundary clamping to prevent tools from "jumping" panes during a drag.
+
+### Global Event Hijacking (Capturing Phase)
+To ensure a smooth UX, the Interaction Manager utilizes the **DOM Capturing Phase** (`true` flag) for mouse events. This allows the plugin to intercept clicks and drags *before* other chart UI elements or indicator widgets can swallow the event, making the drawing tools feel responsive even on crowded charts.
+
+### Destroyable Lifecycle
+The `destroy()` method implements a "Self-Removal" sequence. Beyond just clearing lines, it:
+1.  **Kills Zombie Listeners:** Unbinds all global window/DOM listeners using stable references.
+2.  **Hotswaps API:** Overwrites its own public methods with no-op dummy functions. This prevents "Cannot read property of null" crashes if external code (like a React `useEffect` cleanup) tries to call the plugin after it's gone.
+3.  **Aggressive Memory Reclaim:** Severs all internal links to the Lightweight Charts API to ensure the browser's Garbage Collector can immediately reclaim 100% of the plugin's RAM.
