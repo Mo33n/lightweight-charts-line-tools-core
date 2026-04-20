@@ -405,15 +405,24 @@ export interface ILineToolsApi {
 	/**
 	 * Programmatically positions the chart's crosshair at a specific screen pixel coordinate.
 	 *
-	 * The plugin handles the conversion of the `(x, y)` pixel coordinate into the correct logical time and price values
-	 * required by the chart's internal API.
-	 *
 	 * @param x - The x-coordinate (in pixels) relative to the chart's canvas.
 	 * @param y - The y-coordinate (in pixels) relative to the chart's canvas.
-	 * @param visible - Controls visibility. If `false`, the crosshair is cleared regardless of `x` and `y`.
+	 * @param visible - Controls visibility.
+	 * @param providedTime - Optional. Logical time value.
+	 * @param providedPrice - Optional. Logical price value.
 	 * @returns void
 	 */
-    setCrossHairXY(x: number, y: number, visible: boolean): void;
+    setCrossHairXY(x: number | null, y: number | null, visible: boolean, providedTime?: any, providedPrice?: number): void;
+
+	/**
+	 * Converts a screen pixel point to a logical LineToolPoint (timestamp and price).
+	 * This is essential for high-fidelity crosshair synchronization.
+	 * 
+	 * @param x - The x-coordinate (in pixels).
+	 * @param y - The y-coordinate (in pixels).
+	 * @returns A LineToolPoint containing logical timestamp and price.
+	 */
+	getLogicalPoint(x: number, y: number): LineToolPoint | null;
 
 	/**
 	 * Clears the crosshair position, making it invisible.

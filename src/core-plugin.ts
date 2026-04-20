@@ -661,6 +661,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	 * @param providedTime - Optional. The raw time from the chart event to prevent vertical jitter.
 	 * @returns void
 	 */
+	/*
 	public setCrossHairXY(x: number, y: number, visible: boolean, providedTime?: HorzScaleItem): void {
 		if (!visible) {
 			this.clearCrossHair();
@@ -691,6 +692,62 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 			this.clearCrossHair();
 		}
 	}
+	*/
+
+	/**
+	 * Sets the crosshair position to a specific pixel coordinate (x, y) on the chart.
+	 *
+	 * @param x - The x-coordinate (in pixels).
+	 * @param y - The y-coordinate (in pixels).
+	 * @param visible - Controls the visibility.
+	 * @param providedTime - Optional. The logical time value.
+	 * @param providedPrice - Optional. The logical price value.
+	 * @returns void
+	 */
+	public setCrossHairXY(x: number | null, y: number | null, visible: boolean, providedTime?: HorzScaleItem, providedPrice?: number): void {
+		if (!visible) {
+			this.clearCrossHair();
+			return;
+		}
+
+		const chart = this._chart;
+		const mainSeries = this._series;
+
+		// 1. DIRECT SYNC BYPASS: If logical values are provided, use them immediately.
+		// This bypasses the InteractionManager entirely for the Slave chart.
+		if (providedTime !== undefined && providedPrice !== undefined) {
+			chart.setCrosshairPosition(
+				providedPrice, 
+				providedTime, 
+				mainSeries as ISeriesApi<SeriesType, HorzScaleItem> 
+			);
+			
+			// Update our supplemental time label if x is provided
+			if (x !== null) {
+				this._crosshairTimeView.update();
+			}
+			return;
+		}
+
+		// 2. STANDARD MOUSE LOGIC: Use conversion and magnet snapping
+		if (x !== null && y !== null) {
+			const lineToolPoint = this._interactionManager.screenPointToLineToolPoint(new Point(x as Coordinate, y as Coordinate));
+
+			if (lineToolPoint) {
+				const horizontalPosition: HorzScaleItem = providedTime 
+					? providedTime 
+					: lineToolPoint.timestamp as unknown as HorzScaleItem;
+
+				chart.setCrosshairPosition(
+					lineToolPoint.price, 
+					horizontalPosition, 
+					mainSeries as ISeriesApi<SeriesType, HorzScaleItem> 
+				);
+			} else {
+				this.clearCrossHair();
+			}
+		}
+	}	
 
 
 
@@ -754,6 +811,18 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	 */
 	public getMagnetThreshold(): number {
 		return this._magnetThreshold;
+	}
+	
+	/**
+	 * Converts screen coordinates to logical time and price using the plugin's
+	 * internal interpolation and snapping engine.
+	 * 
+	 * @param x - Pixel X.
+	 * @param y - Pixel Y.
+	 * @returns The logical point.
+	 */
+	public getLogicalPoint(x: number, y: number): LineToolPoint | null {
+		return this._interactionManager.screenPointToLineToolPoint(new Point(x as Coordinate, y as Coordinate));
 	}
 
 	/**

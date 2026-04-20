@@ -97,6 +97,7 @@ export class InteractionManager<HorzScaleItem> {
 	private readonly _boundHandleMouseDown = (event: MouseEvent): void => this._handleMouseDown(event);
 	private readonly _boundHandleMouseMove = (event: MouseEvent): void => this._handleMouseMove(event);
 	private readonly _boundHandleMouseUp = (event: MouseEvent): void => this._handleMouseUp(event);
+	private readonly _boundHandleMouseLeave = (event: MouseEvent): void => this._handleMouseLeave(event);
 	private readonly _boundHandleDblClick = (params: MouseEventParams<HorzScaleItem>): void => this._handleDblClick(params);
 	private readonly _boundHandleCrosshairMove = (params: MouseEventParams<HorzScaleItem>): void => this._handleCrosshairMove(params);
 	private readonly _boundHandleKeyDown = (event: KeyboardEvent): void => this._handleKey(event);
@@ -282,6 +283,7 @@ export class InteractionManager<HorzScaleItem> {
 		// Note: 'true' enables the Capturing Phase to prevent event swallowing.
 		chartElement.addEventListener('mousedown', this._boundHandleMouseDown, true);
 		chartElement.addEventListener('mousemove', this._boundHandleMouseMove, true);
+		chartElement.addEventListener('mouseleave', this._boundHandleMouseLeave, true);
 
 		window.addEventListener('mouseup', this._boundHandleMouseUp); 
 		
@@ -315,6 +317,7 @@ export class InteractionManager<HorzScaleItem> {
 		// that was used in addEventListener to successfully kill the listener.
 		chartElement.removeEventListener('mousedown', this._boundHandleMouseDown, true);
 		chartElement.removeEventListener('mousemove', this._boundHandleMouseMove, true);
+		chartElement.removeEventListener('mouseleave', this._boundHandleMouseLeave, true);
 
 		window.removeEventListener('mouseup', this._boundHandleMouseUp);
 		window.removeEventListener('keydown', this._boundHandleKeyDown);
@@ -1893,5 +1896,26 @@ export class InteractionManager<HorzScaleItem> {
 	private _eventToPoint(event: MouseEvent): Point | null {
 		const rect = this._chart.chartElement().getBoundingClientRect();
 		return new Point(event.clientX - rect.left, event.clientY - rect.top);
+	}
+
+	/**
+	 * Handles the 'mouseleave' event on the chart container.
+	 * 
+	 * This is critical for crosshair synchronization. It ensures that when the mouse 
+	 * moves to another chart, this instance's "last known position" is cleared, 
+	 * preventing the passive magnet engine from using stale coordinates.
+	 * 
+	 * @param event - The browser's MouseEvent.
+	 * @private
+	 */
+	private _handleMouseLeave(event: MouseEvent): void {
+		// Nullify the global point so the crosshair logic knows the mouse is gone
+		this._currentGlobalPoint = null;
+		
+		// If we are not currently creating a tool, clear our crosshair 
+		// to ensure no "ghost" crosshair remains stuck at the exit point.
+		if (!this._currentToolCreating) {
+			this._plugin.clearCrossHair();
+		}
 	}
 }
