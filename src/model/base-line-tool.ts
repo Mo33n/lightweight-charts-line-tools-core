@@ -430,7 +430,7 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 			}
 		}		
 
-		console.log(`Tool ${this.toolType} with ID ${this.id()} attached to series.`);
+		//console.log(`Tool ${this.toolType} with ID ${this.id()} attached to series.`);
 	}
 
 	/**
@@ -492,7 +492,7 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	 * @returns void
 	 */
 	public detached(): void {
-		console.log(`[BaseLineTool] Tool ${this.id()} detached from series.`);
+		//console.log(`[BaseLineTool] Tool ${this.id()} detached from series.`);
 
 		// Nullify references to LWCharts APIs to prevent memory leaks / stale closures.
 		// This is important because chart/series APIs might hold references back to the primitive.
@@ -1134,7 +1134,7 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	 * @returns void
 	 */
 	public destroy(): void {
-		console.log(`[BaseLineTool] Destroying tool with ID: ${this.id()}`);
+		//console.log(`[BaseLineTool] Destroying tool with ID: ${this.id()}`);
 
 		this._isDestroying = true;
 

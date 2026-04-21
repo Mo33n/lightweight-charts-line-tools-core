@@ -389,7 +389,7 @@ export class InteractionManager<HorzScaleItem> {
 		// 1. Remove from Lightweight Charts rendering pipeline (from its associated pane)
 		try {
 			tool.getPane().detachPrimitive(tool); 
-			console.log(`[InteractionManager] Detached primitive for tool: ${tool.id()} from pane.`);
+			//console.log(`[InteractionManager] Detached primitive for tool: ${tool.id()} from pane.`);
 		} catch (e: any) {
 			console.error(`[InteractionManager] Error detaching primitive for tool ${tool.id()}:`, e.message);
 		}

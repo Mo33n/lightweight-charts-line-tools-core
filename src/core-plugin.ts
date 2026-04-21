@@ -223,7 +223,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	 * plugin.removeLineToolsById(['tool-id-1', 'tool-id-2']);
 	 */
 	public removeLineToolsById(ids: string[]): void {
-		console.log(`[CorePlugin] Removing tools. Current tool count: ${this._tools.size}`);
+		//console.log(`[CorePlugin] Removing tools. Current tool count: ${this._tools.size}`);
 		let needsUpdate = false;
 		ids.forEach(id => {
 			const tool = this._tools.get(id);
@@ -232,7 +232,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 				tool.destroy(); // Then call our plugin's internal cleanup
 				this._tools.delete(id); // Then remove from plugin's map
 				needsUpdate = true;
-				console.log(`Removed line tool with ID: ${id}`);
+				//console.log(`Removed line tool with ID: ${id}`);
 			}
 		});
 		if (needsUpdate) {
@@ -447,7 +447,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 				// Use createOrUpdateLineTool to handle updating existing or creating new
 				this.createOrUpdateLineTool(toolData.toolType, toolData.points, toolData.options, toolData.id);
 			});
-			console.log(`Imported ${parsedTools.length} line tools.`);
+			//console.log(`Imported ${parsedTools.length} line tools.`);
 			this.requestUpdate(); // Trigger a single update after all imports
 			return true;
 		} catch (e: any) {
@@ -954,7 +954,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 		(this._crosshairTimeView as any) = null;
 		(this._customTimeFormatter as any) = null;
 
-		console.log('[CorePlugin] Plugin has been fully uninstalled and neutered.');
+		console.log('[CorePlugin] Plugin has been fully uninstalled and destroyed.');
 	}	
 
 	// #endregion
@@ -970,7 +970,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	 * @returns void
 	 */
 	public fireDoubleClickEvent(tool: BaseLineTool<HorzScaleItem>): void {
-		console.log(`[CorePlugin] Firing DoubleClick event for tool: ${tool.id()}`);
+		//console.log(`[CorePlugin] Firing DoubleClick event for tool: ${tool.id()}`);
 		const eventParams: LineToolsDoubleClickEventParams = {
 			selectedLineTool: tool.getExportData(),
 		};
@@ -990,7 +990,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	 * @returns void
 	 */
 	public fireSingleClickEvent(tool: BaseLineTool<HorzScaleItem>, selectionState: 'selected' | 'deselected'): void {
-		console.log(`[CorePlugin] Firing SingleClick event: ${tool.id()} is now ${selectionState}`);
+		//console.log(`[CorePlugin] Firing SingleClick event: ${tool.id()} is now ${selectionState}`);
 
 		// Build the predictive payload
 		const eventParams: LineToolsSingleClickEventParams = {
@@ -1006,7 +1006,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 
 		// --- NEW: Detailed inspection log for testing ---
 		// This will show you the exact object that the frontend will eventually receive.
-		console.log('[CorePlugin] Selection Payload Payload:', JSON.parse(JSON.stringify(eventParams)));
+		//console.log('[CorePlugin] Selection Payload Payload:', JSON.parse(JSON.stringify(eventParams)));
 
 		this._selectSingleClickDelegate.fire(eventParams);
 	}
@@ -1024,7 +1024,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	 * @returns void
 	 */
 	public fireAfterEditEvent(tool: BaseLineTool<HorzScaleItem>, stage: 'lineToolEdited' | 'pathFinished' | 'lineToolFinished'): void {
-		console.log(`[CorePlugin] Firing AfterEdit event for tool: ${tool.id()} with stage: ${stage}`);
+		//console.log(`[CorePlugin] Firing AfterEdit event for tool: ${tool.id()} with stage: ${stage}`);
 		const eventParams: LineToolsAfterEditEventParams = {
 			selectedLineTool: tool.getExportData(),
 			stage: stage,
@@ -1161,7 +1161,7 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 		}
 
 		this._chart.applyOptions({}); // Trigger a chart update to render the new tool
-		console.log(`Created or updated line tool: ${type} with ID: ${newTool.id()}`);
+		//console.log(`Created or updated line tool: ${type} with ID: ${newTool.id()}`);
 		return newTool;
 	}
 
