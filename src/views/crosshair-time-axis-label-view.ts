@@ -64,6 +64,11 @@ export class CrosshairTimeAxisLabelView<HorzScaleItem> implements ITimeAxisView 
 	public updateState(text: string, coordinate: Coordinate, visible: boolean): void {
 		const data = this._rendererData;
 
+		// --- Short-circuit if nothing visually changed ---
+		if (data.visible === visible && data.text === text && data.coordinate === coordinate) {
+			return; 
+		}
+
 		data.visible = visible;
 		data.text = text;
 		data.coordinate = coordinate;

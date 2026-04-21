@@ -837,6 +837,10 @@ export function convertUTCTimestampToDateString(timestamp: UTCTimestamp): string
 	return date.toISOString().split('T')[0];
 }
 
+
+const _seriesIntervalCache = new WeakMap<any, { direction: string, start: number, interval: number }>();
+
+
 /**
  * Internal Helper: Proves the chart's true time interval by checking up to 10 adjacent bars.
  * 
@@ -860,11 +864,15 @@ function _getVerifiedBarInterval<HorzScaleItem>(
 	const startIndex = direction === 'last' ? lastLogical : firstLogical;
 	const step = direction === 'last' ? -1 : 1; 
 
+	// 2. ADD THIS FAST CACHE RETURN
+	const cacheRecord = _seriesIntervalCache.get(series);
+	if (cacheRecord && cacheRecord.direction === direction && cacheRecord.start === startIndex) {
+		return cacheRecord.interval;
+	}
+
 	let prevInterval: number | null = null;
 
 	for (let i = 0; i < maxChecks; i++) {
-		// Fetch candles directly by index. dataByIndex is O(1) and points to 
-		// the existing memory object without copying the chart array.
 		const barA = series.dataByIndex(startIndex + (i * step) as any, 0);
 		const barB = series.dataByIndex(startIndex + ((i + 1) * step) as any, 0);
 
@@ -875,14 +883,18 @@ function _getVerifiedBarInterval<HorzScaleItem>(
 		
 		const interval = Math.abs(tA - tB);
 
-		// Verification: If the current gap matches the previous gap, we have "proved" the interval.
 		if (prevInterval !== null && interval === prevInterval) {
+			// 3. CACHE IT BEFORE RETURNING
+			_seriesIntervalCache.set(series, { direction, start: startIndex, interval });
 			return interval;
 		}
 		prevInterval = interval;
 	}
 
-	// Fallback for very small datasets or irregular tick data.
+	// 4. CACHE FALLBACK
+	if (prevInterval !== null) {
+		_seriesIntervalCache.set(series, { direction, start: startIndex, interval: prevInterval });
+	}
 	return prevInterval;
 }
 

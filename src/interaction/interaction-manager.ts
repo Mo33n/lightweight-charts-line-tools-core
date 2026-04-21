@@ -69,6 +69,9 @@ export class InteractionManager<HorzScaleItem> {
 	private _isDrag: boolean = false;
 	private _isShiftKeyDown: boolean = false;
 
+	private _lastCrosshairText: string = '';
+	private _lastCrosshairX: Coordinate | null = null;
+
 	/**
 	 * Lock State — when true, all mouse interactions are suppressed.
 	 * Tools remain visible but cannot be selected, moved, or drawn.
@@ -1541,16 +1544,22 @@ export class InteractionManager<HorzScaleItem> {
 					const snappedX = this._chart.timeScale().logicalToCoordinate(snappedLogical as Logical);
 
 					if (snappedX !== null) {
-						// Update the supplemental view with the final text and snapped position.
-						this._plugin.updateCrosshairTimeLabel(text, snappedX as Coordinate, true);
-						
-						// Set the visibility flag and request a single repaint.
-						this._crosshairSupplementalVisible = true; 
-						this._plugin.requestUpdate();
-					}
+						// --- NEW: THROTTLE LOGIC ---
+						// Only trigger a chart repaint if the snapped position or text actually changed!
+						if (this._lastCrosshairX !== snappedX || this._lastCrosshairText !== text || !this._crosshairSupplementalVisible) {
+							this._lastCrosshairX = snappedX;
+							this._lastCrosshairText = text;
+
+							this._plugin.updateCrosshairTimeLabel(text, snappedX as Coordinate, true);
+							this._crosshairSupplementalVisible = true; 
+							this._plugin.requestUpdate();
+						}
+					}					
 				} else {
 					// Cleanup: The mouse is too far out of bounds to interpolate a valid time.
 					if (this._crosshairSupplementalVisible) {
+						this._lastCrosshairX = null; // Clear cache
+						this._lastCrosshairText = '';
 						this._plugin.updateCrosshairTimeLabel('', 0 as Coordinate, false);
 						this._crosshairSupplementalVisible = false;
 						this._plugin.requestUpdate();
@@ -1561,6 +1570,8 @@ export class InteractionManager<HorzScaleItem> {
 			// MOUSE OVER DATA: Hide our supplemental label so the chart's 
 			// native crosshair label can show without interference.
 			if (this._crosshairSupplementalVisible) {
+				this._lastCrosshairX = null;
+				this._lastCrosshairText = '';
 				this._plugin.updateCrosshairTimeLabel('', 0 as Coordinate, false);
 				this._crosshairSupplementalVisible = false;
 				this._plugin.requestUpdate();
