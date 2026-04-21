@@ -797,23 +797,45 @@ export function extendAndClipLineSegment(point0: Point, point1: Point, width: nu
 // #region Time/Logical Index Interpolation Utilities
 
 /**
+ * A high-speed memory cache for date string parsing.
+ * 
+ * Translating strings like '2023-01-01' into UNIX timestamps via new Date() is computationally 
+ * expensive. Since time is immutable, we cache the result here so subsequent lookups for the 
+ * exact same date string are instantaneous (O(1) memory lookup).
+ */
+const _dateStringCache = new Map<string, UTCTimestamp>();
+
+/**
  * **Time Format Utility: String to Timestamp**
  * 
  * Converts a standard ISO Date string (e.g., "2023-01-01") into a UNIX Timestamp (seconds).
  * 
  * ### Context
  * Lightweight Charts supports data formats where time is a string (e.g., '2018-12-22'). 
- * However, the plugin's internal geometry and interpolation math ({@link interpolateTimeFromLogicalIndex}) 
- * strictly requires numeric values to calculate deltas and intervals.
+ * However, the plugin's internal geometry and interpolation math strictly requires 
+ * numeric values to calculate deltas and intervals.
  * 
- * This helper ensures that string-based series data can be consumed by the math engine.
+ * This helper ensures that string-based series data can be consumed by the math engine,
+ * utilizing a high-speed cache to eliminate repetitive Date object allocations.
  * 
  * @param dateString - The date string to convert.
  * @returns The timestamp in seconds (UTCTimestamp).
  */
 export function convertDateStringToUTCTimestamp(dateString: string): UTCTimestamp {
+	// Check if we already did the heavy math for this exact string
+	const cached = _dateStringCache.get(dateString);
+	if (cached !== undefined) {
+		return cached;
+	}
+
+	// If not in cache, do the heavy Date parsing
 	const date = new Date(dateString);
-	return Math.floor(date.getTime() / 1000) as UTCTimestamp;
+	const timestamp = Math.floor(date.getTime() / 1000) as UTCTimestamp;
+	
+	// Save the answer in our dictionary for next time
+	_dateStringCache.set(dateString, timestamp);
+	
+	return timestamp;
 }
 
 /**

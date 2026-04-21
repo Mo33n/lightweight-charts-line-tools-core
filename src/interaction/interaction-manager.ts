@@ -87,6 +87,22 @@ export class InteractionManager<HorzScaleItem> {
 	 */
 	private _currentGlobalPoint: Point | null = null;	
 
+	// Acts as a clipboard so we only measure DOM elements once per mouse event.
+	private _rectCache = new Map<HTMLElement, DOMRect>();
+
+	/**
+	 * Retrieves the bounding rectangle for an element, utilizing a per-event cache 
+	 * to prevent layout thrashing during heavy hit-test loops.
+	 */
+	private _getCachedRect(el: HTMLElement): DOMRect {
+		let rect = this._rectCache.get(el);
+		if (!rect) {
+			rect = el.getBoundingClientRect(); // The heavy DOM read
+			this._rectCache.set(el, rect);     // Save it to the clipboard
+		}
+		return rect;
+	}	
+
 	/**
 	 * Flag used to track if our supplemental crosshair time label is currently visible.
 	 * This is used to throttle requestUpdate() calls, ensuring we only trigger a 
@@ -562,6 +578,7 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleMouseDown(event: MouseEvent): void {
+		this._rectCache.clear(); // WIPE DOM CLIPBOARD
 
 		// Immediately reject any interaction if the chart is in read-only mode
 		if (this._locked) { return; }
@@ -700,6 +717,8 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleMouseMove(event: MouseEvent): void {
+		this._rectCache.clear(); // WIPE DOM CLIPBOARD
+
 		// Stop tracking mouse movements and ghost points if locked
 		if (this._locked) { return; }
 
@@ -1473,6 +1492,8 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleCrosshairMove(params: MouseEventParams<HorzScaleItem>): void {
+		this._rectCache.clear(); // WIPE DOM CLIPBOARD
+
 		// Prevent hover states, ghosting, and custom crosshairs if locked
 		if (this._locked) { return; }
 
@@ -1777,7 +1798,8 @@ export class InteractionManager<HorzScaleItem> {
 	private _getActivePaneYOffset(): number {
 		try {
 			// 1. Get the bounding rectangle for the entire chart (our 0,0 reference point)
-			const chartRect = this._chart.chartElement().getBoundingClientRect();
+			// Use cached rect
+			const chartRect = this._getCachedRect(this._chart.chartElement());
 			
 			// 2. Ask the chart for all active panes
 			const panes = (this._chart as any).panes?.();
@@ -1791,8 +1813,8 @@ export class InteractionManager<HorzScaleItem> {
 					// Get the DOM element for this specific pane
 					const paneEl = pane.getHTMLElement?.();
 					if (paneEl) {
-						// Calculate the difference between the pane's top and the chart's top
-						return paneEl.getBoundingClientRect().top - chartRect.top;
+						// Use cached rect
+						return this._getCachedRect(paneEl).top - chartRect.top;
 					}
 					break;
 				}
@@ -1823,7 +1845,8 @@ export class InteractionManager<HorzScaleItem> {
 				if (series && series.indexOf(this._series) !== -1) {
 					const paneEl = pane.getHTMLElement?.();
 					if (paneEl) {
-						return paneEl.getBoundingClientRect().height;
+						//Use cached rect
+						return this._getCachedRect(paneEl).height;
 					}
 					break;
 				}
@@ -1846,7 +1869,8 @@ export class InteractionManager<HorzScaleItem> {
 	 */
 	private _isMouseInActivePane(y: number): boolean {
 		try {
-			const chartRect = this._chart.chartElement().getBoundingClientRect();
+			// Use cached rect
+			const chartRect = this._getCachedRect(this._chart.chartElement());
 			const panes = (this._chart as any).panes?.();
 			if (!panes) return true; // Fallback
 
@@ -1855,7 +1879,8 @@ export class InteractionManager<HorzScaleItem> {
 				if (series && series.indexOf(this._series) !== -1) {
 					const paneEl = pane.getHTMLElement?.();
 					if (paneEl) {
-						const rect = paneEl.getBoundingClientRect();
+						// Use cached rect
+						const rect = this._getCachedRect(paneEl);
 						const paneTop = rect.top - chartRect.top;
 						const paneBottom = paneTop + rect.height;
 						return y >= paneTop && y <= paneBottom;
@@ -1880,14 +1905,16 @@ export class InteractionManager<HorzScaleItem> {
 	 */
 	private _getPaneYOffsetForTool(tool: BaseLineTool<HorzScaleItem>): number {
 		try {
-			const chartRect = this._chart.chartElement().getBoundingClientRect();
+			// Use cached rect
+			const chartRect = this._getCachedRect(this._chart.chartElement());
 			
 			// Ask the tool for the specific IPaneApi instance it discovered during attachment
 			const pane = tool.getPane();
 			const paneEl = pane?.getHTMLElement?.();
 			
 			if (paneEl) {
-				return paneEl.getBoundingClientRect().top - chartRect.top;
+				// Use cached rect
+				return this._getCachedRect(paneEl).top - chartRect.top;
 			}
 		} catch (e: any) {
 			// This can happen if the tool is in the process of being detached or destroyed
