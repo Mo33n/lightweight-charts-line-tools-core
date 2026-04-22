@@ -72,6 +72,9 @@ export class InteractionManager<HorzScaleItem> {
 	private _lastCrosshairText: string = '';
 	private _lastCrosshairX: Coordinate | null = null;
 
+	private _lastSnapLogical: number | null = null;
+	private _lastSnapCandidates: { y: number }[] = [];
+
 	/**
 	 * Lock State — when true, all mouse interactions are suppressed.
 	 * Tools remain visible but cannot be selected, moved, or drawn.
@@ -428,172 +431,116 @@ export class InteractionManager<HorzScaleItem> {
 		}
 	}
 
-
 	/**
-	 * Calculates the "Snapped" Y-coordinate for a given screen point.
+	 * Calculates the "Snapped" Y-coordinate based on data in the active pane, 
+	 * utilizing a high-performance column cache with a "Live Candle Bypass."
 	 * 
-	 * It identifies the candle at the mouse X position, converts its OHLC values 
-	 * to pixels, and finds the closest value within the magnet threshold.
+	 * ### Efficiency & Real-Time Accuracy
+	 * To maintain high performance during vertical mouse wiggles, this engine caches 
+	 * candidate snap points for historical candles. However, it explicitly detects 
+	 * if the mouse is over the latest (live) candle in the series. 
 	 * 
-	 * @param x - The screen X coordinate.
-	 * @param y - The raw screen Y coordinate.
-	 * @returns The snapped Y coordinate if within threshold, otherwise the raw Y.
+	 * If the candle is "Live," the cache is bypassed, and series data is fetched 
+	 * fresh on every pixel move. This ensures that intra-bar price updates 
+	 * (e.g., a wick growing in real-time) are reflected in the magnet snapping 
+	 * without latency.
+	 * 
+	 * ### Priority Hierarchy
+	 * 1. Active Tool `magnetThreshold` (if > 0)
+	 * 2. Global Plugin `magnetThreshold`
+	 * 
+	 * @param x - The global screen X coordinate in pixels.
+	 * @param y - The global screen Y coordinate in pixels.
+	 * @returns The snapped Y coordinate if within threshold; otherwise the original Y.
 	 * @private
 	 */
-	/*
 	private _getSnappedY(x: number, y: number): number {
-
-		// 1. Identify the tool currently being touched
+		// --- 1. THRESHOLD RESOLUTION ---
 		const activeTool = this._draggedTool || this._currentToolCreating;
- 
-		// 2. Determine which threshold to use:
-		// Priority 1: The specific tool's override (if it has one > 0)
-		// Priority 2: The global plugin default (via the getter)
 		const toolThreshold = activeTool?.options().magnetThreshold;
 		const effectiveThreshold = (toolThreshold !== undefined && toolThreshold > 0) 
 			? toolThreshold 
 			: this._plugin.getMagnetThreshold();
 
-		// 3. Early exit if snapping is disabled globally and locally
 		if (effectiveThreshold <= 0) return y;
 
-		// 2. Identify the bar under the cursor using the plugin's data fetching API.
-		const bar = this._plugin.getBarAtCoordinate(x);
-		
-		// 3. Ensure we have a valid candle with OHLC data.
-		if (!bar || typeof bar.close === 'undefined') return y;
-
-		// --- CRITICAL FIX: Coordinate Space Alignment ---
-		// The mouse `y` is Chart-Relative. 
-		// `priceToCoordinate` returns Pane-Relative.
-		// We must ADD the pane offset to the candle prices so we are measuring apples to apples.
-		const paneOffset = this._getActivePaneYOffset();		
-
-		// 4. Convert OHLC prices to screen Y-coordinates (pixels).
-		const prices = [
-			{ val: bar.close, type: 'C' },
-			{ val: bar.high, type: 'H' },
-			{ val: bar.low, type: 'L' },
-			{ val: bar.open, type: 'O' }
-		];
-
-		const candidates = prices.map(p => ({
-			y: (this._series.priceToCoordinate(p.val) as number) + paneOffset,
-			type: p.type
-		})).filter(c => c.y !== null);
-
-		if (candidates.length === 0) return y;
-
-		// 5. Find the candidate with the minimum distance to the mouse.
-		// If distances are equal, the order in our 'prices' array acts as a tie-breaker.
-		let nearestY = y;
-		let minDistance = Infinity;
-
-		for (const candidate of candidates) {
-			const distance = Math.abs(y - candidate.y);
-			
-			if (distance < minDistance) {
-				minDistance = distance;
-				nearestY = candidate.y;
-			}
-		}
-
-		// 6. Apply the threshold gate.
-		// Use effectiveThreshold here to gate the final snap.
-		return minDistance <= effectiveThreshold ? nearestY : y;
-	}
-	*/
-
-	/**
-	 * Calculates the "Snapped" Y-coordinate based on data in the current pane.
-	 * 
-	 * This universal engine:
-	 * 1. Identifies the specific pane the mouse is currently over.
-	 * 2. Retrieves the global logical index (the exact candle column) for the mouse X position.
-	 * 3. Scans ALL series in that pane for data at that exact logical index.
-	 * 4. Respects the Priority: [Tool-Specific Threshold] > [Global Threshold].
-	 * 
-	 * @param x - The global screen X coordinate.
-	 * @param y - The global screen Y coordinate.
-	 * @returns The snapped Y coordinate if within threshold, otherwise the raw Y.
-	 * @private
-	 */
-	private _getSnappedY(x: number, y: number): number {
-		// --- 1. DETERMINE EFFECTIVE THRESHOLD ---
-		// We prioritize the specific tool currently being manipulated.
-		const activeTool = this._draggedTool || this._currentToolCreating;
-		const toolThreshold = activeTool?.options().magnetThreshold;
-		
-		const effectiveThreshold = (toolThreshold !== undefined && toolThreshold > 0) 
-			? toolThreshold 
-			: this._plugin.getMagnetThreshold();
-
-		// Exit early if snapping is disabled globally and locally
-		if (effectiveThreshold <= 0) return y;
-
-		// --- 2. IDENTIFY THE PANE UNDER MOUSE ---
+		// --- 2. PANE & COLUMN RESOLUTION ---
 		const layout = this._plugin.getLayout();
 		const targetPane = layout.panes.find(p => y >= p.top && y <= (p.top + p.height));
-		
-		// If the mouse isn't inside a valid drawing pane (e.g. over a separator), don't snap.
 		if (!targetPane) return y;
-		const paneTop = targetPane.top;
 
-		// --- 3. GET EXACT LOGICAL COLUMN ---
-		// We ask the timescale for the exact vertical column (index) the mouse is over.
 		const timeScale = this._chart.timeScale();
 		const logical = timeScale.coordinateToLogical(x as Coordinate);
 		if (logical === null) return y;
-		
-		// Round it so we strictly snap to the center of the nearest candle.
 		const roundedLogical = Math.round(logical);
 
-		// --- 4. GATHER CANDIDATE POINTS FROM ALL SERIES IN THIS PANE ---
-		const candidates: { y: number }[] =[];
+		// --- 3. LIVE CANDLE DETECTION ---
+		const latestBar = this._plugin.getLatestBar();
+		let isLiveCandle = false;
 
-		targetPane.series.forEach((s: ISeriesApi<SeriesType, HorzScaleItem>) => {
-			// Use the rounded logical index to grab the exact data point for this vertical column
-			const dataAtTime = s.dataByIndex(roundedLogical as any, 0) as any;
-			if (!dataAtTime) return;
-
-			// Handle OHLC Series (Candlesticks/Bars)
-			if (dataAtTime.close !== undefined) {
-				const ohlc =[dataAtTime.open, dataAtTime.high, dataAtTime.low, dataAtTime.close];
-				ohlc.forEach(val => {
-					if (val !== undefined) {
-						const localY = s.priceToCoordinate(val);
-						if (localY !== null) {
-							candidates.push({ y: localY + paneTop });
-						}
-					}
-				});
-			} 
-			// Handle Single-Value Series (Line, Area, Baseline, Histogram, etc.)
-			else if (dataAtTime.value !== undefined) {
-				const localY = s.priceToCoordinate(dataAtTime.value);
-				if (localY !== null) {
-					candidates.push({ y: localY + paneTop });
-				}
-			}
-		});
-
-		if (candidates.length === 0) return y;
-
-		// --- 5. FIND THE CLOSEST CANDIDATE ---
-		// If multiple series overlap, we find the absolute closest pixel to the mouse.
-		let nearestY = y;
-		let minDistance = Infinity;
-
-		for (const candidate of candidates) {
-			const distance = Math.abs(y - candidate.y);
-			if (distance < minDistance) {
-				minDistance = distance;
-				nearestY = candidate.y;
+		if (latestBar) {
+			const latestLogical = timeScale.coordinateToLogical(timeScale.timeToCoordinate(latestBar.time as HorzScaleItem)!);
+			if (latestLogical !== null && roundedLogical === Math.round(latestLogical)) {
+				isLiveCandle = true;
 			}
 		}
 
-		// --- 6. GATE BY THRESHOLD ---
-		// Only "Snap" if the closest data point is within our pixel threshold.
+		// --- 4. CACHE ARBITRATION & LOGGING ---
+		let candidates: { y: number }[] = [];
+
+		if (!isLiveCandle && this._lastSnapLogical === roundedLogical) {
+			// --- FAST PATH: CACHE HIT ---
+			//console.log(`[Magnet] Cache Hit: Reusing ${this._lastSnapCandidates.length} points for historical column ${roundedLogical}`);
+			candidates = this._lastSnapCandidates;
+		} else {
+			// --- SLOW PATH: DATA SCAN ---
+			if (isLiveCandle) {
+				//console.log(`[Magnet] Live Bypass: Fetching fresh data for updating candle at column ${roundedLogical}`);
+			} else {
+				//console.log(`[Magnet] Cache Miss: Scanning new historical column ${roundedLogical}`);
+			}
+
+			const paneTop = targetPane.top;
+
+			targetPane.series.forEach((s: ISeriesApi<SeriesType, HorzScaleItem>) => {
+				const dataAtTime = s.dataByIndex(roundedLogical as any, 0) as any;
+				if (!dataAtTime) return;
+
+				if (dataAtTime.close !== undefined) {
+					const ohlc = [dataAtTime.open, dataAtTime.high, dataAtTime.low, dataAtTime.close];
+					for (const val of ohlc) {
+						if (val !== undefined) {
+							const localY = s.priceToCoordinate(val);
+							if (localY !== null) candidates.push({ y: localY + paneTop });
+						}
+					}
+				} else if (dataAtTime.value !== undefined) {
+					const localY = s.priceToCoordinate(dataAtTime.value);
+					if (localY !== null) candidates.push({ y: localY + paneTop });
+				}
+			});
+
+			// Only store in the cache if this is a historical candle.
+			if (!isLiveCandle) {
+				this._lastSnapLogical = roundedLogical;
+				this._lastSnapCandidates = candidates;
+			}
+		}
+
+		if (candidates.length === 0) return y;
+
+		// --- 5. PROXIMITY MATH ---
+		let nearestY = y;
+		let minDistance = Infinity;
+
+		for (let i = 0; i < candidates.length; i++) {
+			const dist = Math.abs(y - candidates[i].y);
+			if (dist < minDistance) {
+				minDistance = dist;
+				nearestY = candidates[i].y;
+			}
+		}
+
 		return minDistance <= effectiveThreshold ? nearestY : y;
 	}
 
