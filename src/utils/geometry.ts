@@ -1076,39 +1076,37 @@ export function interpolateTimeFromLogicalIndex<HorzScaleItem>(
 /**
  * **Critical Core Utility: Viewport & Culling Price Range**
  * 
- * Calculates the *absolute* visible price range of the specific chart pane 
- * where this tool is located. It maps the physical top (y=0) and bottom 
- * (y=height) pixel edges directly to price values.
+ * Calculates the absolute visible price range of the specific chart pane 
+ * where the provided tool is located. It maps the physical top (y=0) and 
+ * bottom (y=height) pixel edges directly to logical price values.
  * 
- * ### Multi-Pane & Performance Optimization
- * This function utilizes the tool's internal micro-cached dimensions. This provides 
- * two critical benefits over manual DOM measurement:
- * 1. **Pane Awareness:** It correctly identifies the height of the specific sub-pane 
- *    (e.g., an RSI or Volume pane) instead of assuming the height of the entire chart.
- * 2. **Layout Thrashing Protection:** It avoids redundant DOM measurements by 
- *    leveraging the tool's shared 16ms dimension cache, ensuring smooth 60fps performance.
+ * ### Unified Layout Integration
+ * This utility utilizes the tool's `getChartDrawingHeight()` method, which is 
+ * powered by the Core Plugin's unified layout snapshot. This ensures:
+ * 1. **Multi-Pane Accuracy:** It correctly calculates the range for sub-panes 
+ *    (e.g., RSI, Volume) by using pane-specific heights.
+ * 2. **Performance:** It is safe to call at 60fps during panning/zooming as it 
+ *    avoids layout thrashing by reading from a 16ms micro-cache rather than 
+ *    hitting the DOM directly.
  * 
  * @typeParam HorzScaleItem - The type of the horizontal scale item.
- * @param tool - The tool instance providing context and access to the micro-cached pane height.
- * @returns An object containing `from` (the price at the bottom edge) and `to` (the price at the top edge), or `null` if the series is not ready.
+ * @param tool - The tool instance providing the series context and access to cached pane dimensions.
+ * @returns An object containing `from` (the price at the bottom edge) and `to` (the price at the top edge), or `null` if the series is not yet attached.
  */
 export function getExtendedVisiblePriceRange<HorzScaleItem>(
 	tool: BaseLineTool<HorzScaleItem>
 ): { from: BarPrice | null; to: BarPrice | null; } | null {
-	// Retrieve the series reference from the tool
 	const series = tool.getSeries();
 
-	// --- PHASE: DIMENSION ACQUISITION ---
-	// We call the tool's cached method. If 100 tools call this in the same frame, 
-	// only the first one hits the DOM; the rest get the value from the static cache.
+	// We utilize the unified height getter which automatically identifies 
+	// the correct pane and handles the performance caching logic.
 	const paneHeight = tool.getChartDrawingHeight();
 
-	// --- PHASE: COORDINATE MAPPING ---
-	// Map the physical pixel boundaries back to logical prices.
-	// 'from' is the bottom (highest pixel Y), 'to' is the top (lowest pixel Y).
+	// Note: In pixel space, height (e.g. 600) is the bottom of the screen 
+	// and 0 is the top. We map these to their respective logical prices.
 	return {
-		from: series.coordinateToPrice(paneHeight as Coordinate),
-		to: series.coordinateToPrice(0 as Coordinate),
+		from: series.coordinateToPrice(paneHeight as Coordinate), // Bottom Price
+		to: series.coordinateToPrice(0 as Coordinate),           // Top Price
 	};
 }
 

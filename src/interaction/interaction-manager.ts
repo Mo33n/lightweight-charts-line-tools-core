@@ -85,23 +85,7 @@ export class InteractionManager<HorzScaleItem> {
 	 * bypassing the resetting Y-coordinates of native crosshair events.
 	 * @private
 	 */
-	private _currentGlobalPoint: Point | null = null;	
-
-	// Acts as a clipboard so we only measure DOM elements once per mouse event.
-	private _rectCache = new Map<HTMLElement, DOMRect>();
-
-	/**
-	 * Retrieves the bounding rectangle for an element, utilizing a per-event cache 
-	 * to prevent layout thrashing during heavy hit-test loops.
-	 */
-	private _getCachedRect(el: HTMLElement): DOMRect {
-		let rect = this._rectCache.get(el);
-		if (!rect) {
-			rect = el.getBoundingClientRect(); // The heavy DOM read
-			this._rectCache.set(el, rect);     // Save it to the clipboard
-		}
-		return rect;
-	}	
+	private _currentGlobalPoint: Point | null = null;
 
 	/**
 	 * Flag used to track if our supplemental crosshair time label is currently visible.
@@ -166,9 +150,6 @@ export class InteractionManager<HorzScaleItem> {
 	 *    `interpolateTimeFromLogicalIndex` to linearly project the time forward from the last known candle.
 	 *
 	 * @param screenPoint - The screen coordinates as a {@link Point} object.
-	 * @param paneRelative - If `true`, the `screenPoint.y` is already relative to the active pane 
-	 *        (e.g., it came from LWC's native crosshair event). If `false` (default), the `y` is relative 
-	 *        to the entire chart container and needs to be adjusted downwards.
 	 * @returns A {@link LineToolPoint} containing a timestamp and price, or `null` if the conversion fails.
 	 */
 	public screenPointToLineToolPoint(screenPoint: Point): LineToolPoint | null {
@@ -578,7 +559,6 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleMouseDown(event: MouseEvent): void {
-		this._rectCache.clear(); // WIPE DOM CLIPBOARD
 
 		// Immediately reject any interaction if the chart is in read-only mode
 		if (this._locked) { return; }
@@ -717,7 +697,6 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleMouseMove(event: MouseEvent): void {
-		this._rectCache.clear(); // WIPE DOM CLIPBOARD
 
 		// Stop tracking mouse movements and ghost points if locked
 		if (this._locked) { return; }
@@ -1492,7 +1471,6 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleCrosshairMove(params: MouseEventParams<HorzScaleItem>): void {
-		this._rectCache.clear(); // WIPE DOM CLIPBOARD
 
 		// Prevent hover states, ghosting, and custom crosshairs if locked
 		if (this._locked) { return; }
@@ -1783,147 +1761,6 @@ export class InteractionManager<HorzScaleItem> {
 	}
 
 	/**
-	 * Calculates the physical Y-offset (in CSS pixels) of the pane that currently holds `this._series`.
-	 * 
-	 * The offset is measured from the top of the main chart container.
-	 * For the main candlestick pane (Pane 0), this typically returns 0. 
-	 * For indicator panes (Pane 1, Pane 2, etc.), it returns the distance down the screen.
-	 * 
-	 * This is required because raw DOM mouse events provide coordinates relative to the 
-	 * entire chart, but the Series API expects coordinates relative to its own specific pane.
-	 * 
-	 * @private
-	 * @returns The Y offset in pixels.
-	 */
-	private _getActivePaneYOffset(): number {
-		try {
-			// 1. Get the bounding rectangle for the entire chart (our 0,0 reference point)
-			// Use cached rect
-			const chartRect = this._getCachedRect(this._chart.chartElement());
-			
-			// 2. Ask the chart for all active panes
-			const panes = (this._chart as any).panes?.();
-			if (!panes) return 0;
-			
-			// 3. Iterate through all panes to find the one containing our plugin's primary series
-			for (const pane of panes) {
-				const series = pane.getSeries?.();
-				// If this pane owns our series...
-				if (series && series.indexOf(this._series) !== -1) {
-					// Get the DOM element for this specific pane
-					const paneEl = pane.getHTMLElement?.();
-					if (paneEl) {
-						// Use cached rect
-						return this._getCachedRect(paneEl).top - chartRect.top;
-					}
-					break;
-				}
-			}
-		} catch (e: any) {
-			console.warn('[InteractionManager] Error calculating active pane offset:', e.message);
-		}
-		// Fallback to 0 (assumes the series is in the main, top-level pane)
-		return 0;
-	}
-
-	/**
-	 * Calculates the physical height (in CSS pixels) of the pane that currently holds `this._series`.
-	 * 
-	 * This is used to clamp Y-coordinates so that drawings cannot be dragged 
-	 * out of their owner pane into adjacent panes.
-	 * 
-	 * @private
-	 * @returns The height in pixels, or a safe fallback number if unavailable.
-	 */
-	private _getActivePaneHeight(): number {
-		try {
-			const panes = (this._chart as any).panes?.();
-			if (!panes) return 10000; // Safe fallback
-
-			for (const pane of panes) {
-				const series = pane.getSeries?.();
-				if (series && series.indexOf(this._series) !== -1) {
-					const paneEl = pane.getHTMLElement?.();
-					if (paneEl) {
-						//Use cached rect
-						return this._getCachedRect(paneEl).height;
-					}
-					break;
-				}
-			}
-		} catch (e: any) {
-			console.warn('[InteractionManager] Error calculating active pane height:', e.message);
-		}
-		return 10000; // Fallback
-	}
-
-
-	/**
-	 * Checks if a given chart-relative Y coordinate falls within the vertical bounds of this plugin's active pane.
-	 * 
-	 * Used to prevent plugins in other panes from hijacking the crosshair or responding to clicks 
-	 * that belong to a different pane.
-	 * 
-	 * @param y - The Y coordinate relative to the chart container.
-	 * @returns `true` if the mouse is inside the pane, `false` otherwise.
-	 */
-	private _isMouseInActivePane(y: number): boolean {
-		try {
-			// Use cached rect
-			const chartRect = this._getCachedRect(this._chart.chartElement());
-			const panes = (this._chart as any).panes?.();
-			if (!panes) return true; // Fallback
-
-			for (const pane of panes) {
-				const series = pane.getSeries?.();
-				if (series && series.indexOf(this._series) !== -1) {
-					const paneEl = pane.getHTMLElement?.();
-					if (paneEl) {
-						// Use cached rect
-						const rect = this._getCachedRect(paneEl);
-						const paneTop = rect.top - chartRect.top;
-						const paneBottom = paneTop + rect.height;
-						return y >= paneTop && y <= paneBottom;
-					}
-					break;
-				}
-			}
-		} catch { /* fallback */ }
-		return true; // Default to true if calculation fails to prevent freezing
-	}	
-
-	/**
-	 * Calculates the physical Y-offset of the specific pane a given tool is rendered in.
-	 * 
-	 * While usually identical to `_getActivePaneYOffset`, this method is necessary during 
-	 * iteration loops (like hit-testing) where tools might theoretically be spread across 
-	 * different panes, and we need the specific offset for the tool currently being evaluated.
-	 * 
-	 * @param tool - The specific BaseLineTool instance to measure.
-	 * @private
-	 * @returns The Y offset in pixels.
-	 */
-	private _getPaneYOffsetForTool(tool: BaseLineTool<HorzScaleItem>): number {
-		try {
-			// Use cached rect
-			const chartRect = this._getCachedRect(this._chart.chartElement());
-			
-			// Ask the tool for the specific IPaneApi instance it discovered during attachment
-			const pane = tool.getPane();
-			const paneEl = pane?.getHTMLElement?.();
-			
-			if (paneEl) {
-				// Use cached rect
-				return this._getCachedRect(paneEl).top - chartRect.top;
-			}
-		} catch (e: any) {
-			// This can happen if the tool is in the process of being detached or destroyed
-		}
-		// Fallback to 0
-		return 0;
-	}	
-
-	/**
 	 * Converts a raw browser `MouseEvent` (which uses screen coordinates) into a chart-relative
 	 * {@link Point} object (CSS pixels relative to the chart canvas).
 	 *
@@ -1956,4 +1793,73 @@ export class InteractionManager<HorzScaleItem> {
 			this._plugin.clearCrossHair();
 		}
 	}
+
+	/**
+	 * Determines the vertical offset of the current series' pane.
+	 * 
+	 * @private
+	 * @returns The vertical offset in pixels.
+	 */
+	private _getActivePaneYOffset(): number {
+		// Read from the unified master snapshot
+		const layout = this._plugin.getLayout();
+		
+		// Find the pane that contains this tool's series
+		const myPane = layout.panes.find(p => p.series.indexOf(this._series) !== -1);
+		
+		return myPane ? myPane.top : 0;
+	}
+
+	/**
+	 * Determines the height of the current series' pane.
+	 * 
+	 * @private
+	 * @returns The pane height in pixels.
+	 */
+	private _getActivePaneHeight(): number {
+		// Read from the unified master snapshot
+		const layout = this._plugin.getLayout();
+		
+		// Find the pane that contains this tool's series
+		const myPane = layout.panes.find(p => p.series.indexOf(this._series) !== -1);
+		
+		return myPane ? myPane.height : 10000; // Fallback to a safe large height if not found
+	}
+
+	/**
+	 * Validates if a global Y-coordinate is within the drawing bounds of the active pane.
+	 * 
+	 * @private
+	 * @param y - The global Y coordinate relative to the chart container.
+	 * @returns True if the mouse is in the active pane.
+	 */
+	private _isMouseInActivePane(y: number): boolean {
+		// Read from the unified master snapshot
+		const layout = this._plugin.getLayout();
+		
+		// Find the pane that contains this tool's series
+		const myPane = layout.panes.find(p => p.series.indexOf(this._series) !== -1);
+		if (!myPane) return true; // Fallback to true if unknown
+		
+		// Check if the Y coordinate sits vertically between the pane's top and bottom
+		return y >= myPane.top && y <= (myPane.top + myPane.height);
+	}
+
+	/**
+	 * Determines the vertical offset for a specific tool's pane.
+	 * 
+	 * @private
+	 * @param tool - The specific tool instance being evaluated.
+	 * @returns The vertical offset in pixels.
+	 */
+	private _getPaneYOffsetForTool(tool: BaseLineTool<HorzScaleItem>): number {
+		// Read from the unified master snapshot
+		const layout = this._plugin.getLayout();
+		
+		// Find pane matching the target tool's series reference
+		const toolPane = layout.panes.find(p => p.series.indexOf(tool.getSeries()) !== -1);
+		
+		return toolPane ? toolPane.top : 0;
+	}	
+
 }

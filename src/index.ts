@@ -138,7 +138,7 @@ export { LineToolPaneView } from './views/line-tool-pane-view';
 export { DataSource } from './model/data-source';
 export { PriceDataSource } from './model/price-data-source';
 export { PriceAxisLabelStackingManager } from './model/price-axis-label-stacking-manager';
-export { LineToolsCorePlugin } from './core-plugin';
+export { LineToolsCorePlugin, PaneLayout, ChartLayoutSnapshot } from './core-plugin';
 export { InteractionManager } from './interaction/interaction-manager';
 export { ToolRegistry } from './model/tool-registry';
 

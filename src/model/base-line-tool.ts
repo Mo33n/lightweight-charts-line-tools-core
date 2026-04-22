@@ -333,24 +333,6 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 
 	private _attachedPane: IPaneApi<HorzScaleItem> | null = null; 
 
-	/** 
-	 * SHARED DOM Micro-Cache (Static)
-	 * This Map is shared across ALL tool instances to prevent redundant DOM hits.
-	 * Key: The HTML Element of the specific chart pane.
-	 * Value: Dimensions and the high-resolution timestamp of the measurement.
-	 */
-	private static _globalPaneCache = new Map<HTMLElement, { w: number, h: number, tick: number }>();
-
-	/** 
-	 * Storage for the height retrieved during the last dimension check for this specific tool instance.
-	 */
-	private _cachedPaneHeight: number = 0;
-
-	/** 
-	 * Storage for the width retrieved during the last dimension check for this specific tool instance.
-	 */
-	private _cachedPaneWidth: number = 0;
-
 	/**
 	 * Initializes the Base Line Tool instance.
 	 *
@@ -1347,99 +1329,33 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	}
 
 	/**
-	 * Locates the specific pane this tool is attached to and utilizes a shared
-	 * static cache to prevent layout thrashing across all tool instances.
+	 * Retrieves the pixel width of the chart's drawing area, excluding the Price Axis.
 	 * 
-	 * ### Why 16ms or 100ms, im using 100?
-	 * 100ms represents roughly one frame at 60fps. By caching dimensions for this duration,
-	 * we ensure that if 100 tools request dimensions during the same render cycle, 
-	 * only the first tool performs the expensive DOM measurement.
-	 * 
-	 * @private
-	 */
-	private _updatePaneDimensionsCache(): void {
-		const now = performance.now();
-
-		try {
-			// --- PHASE 1: IDENTIFICATION ---
-			// Locate the specific DOM element for the pane this tool is attached to.
-			const panes = (this._chart as any).panes?.();
-			if (!panes) return;
-
-			let targetPaneEl: HTMLElement | null = null;
-			for (const pane of panes) {
-				const series = pane.getSeries?.();
-				if (series && series.indexOf(this._series) !== -1) {
-					targetPaneEl = pane.getHTMLElement?.() || null;
-					break;
-				}
-			}
-
-			// Fallback to the main chart container if the specific pane cannot be resolved.
-			const elToMeasure = targetPaneEl || this._chart.chartElement();
-			if (!elToMeasure) return;
-
-			// --- PHASE 2: CACHE LOOKUP ---
-			// Check the static Map shared by all tool instances.
-			const cachedEntry = BaseLineTool._globalPaneCache.get(elToMeasure);
-
-			if (cachedEntry) {
-				const age = now - cachedEntry.tick;
-				// If the measurement is less than 16ms old, it is considered fresh for this frame.
-				if (age < 100) {
-					// --- PHASE 3: FAST PATH (CACHE HIT) ---
-					// Logic: Another tool already did the work this frame. We simply hitchhike.
-					//console.log(`[Cache-Hit] Tool ${this.id()} using shared dimensions (Age: ${age.toFixed(1)}ms)`);
-					
-					this._cachedPaneHeight = cachedEntry.h;
-					this._cachedPaneWidth = cachedEntry.w;
-					return;
-				}
-			}
-
-			// --- PHASE 4: SLOW PATH (DOM MEASUREMENT) ---
-			// Logic: We are the first tool to run in this frame, or the cache has expired.
-			// This tool must perform the expensive synchronous layout measurement.
-			//console.log(`[Cache-Miss] Tool ${this.id()} is measuring DOM for ${targetPaneEl ? 'Sub-Pane' : 'Main Chart'}...`);
-			
-			const newHeight = elToMeasure.clientHeight;
-			const newWidth = elToMeasure.clientWidth;
-
-			// --- PHASE 5: CACHE UPDATE ---
-			// Write the result to the "Shared Blackboard" so subsequent tools in this frame can use it.
-			BaseLineTool._globalPaneCache.set(elToMeasure, {
-				w: newWidth,
-				h: newHeight,
-				tick: now
-			});
-
-			this._cachedPaneHeight = newHeight;
-			this._cachedPaneWidth = newWidth;
-			
-			//console.log(`[Cache-Update] New Dimensions [${newWidth}x${newHeight}] cached at ${now.toFixed(1)}ms`);
-
-		} catch (e) {
-			// Fail silently and retain the last successfully cached dimensions to avoid visual jitter.
-		}
-	}	
-
-	/**
-	 * Retrieves the pixel width of the specific chart pane this tool is attached to.
+	 * This utilizes the unified layout engine in the Core Plugin to ensure 
+	 * high-performance, layout-thrashing-free access to dimensions.
 	 * 
 	 * @returns The current width in pixels.
 	 */
 	public getChartDrawingWidth(): number {
-		this._updatePaneDimensionsCache();
-		return this._cachedPaneWidth;
+		// Read from the unified snapshot
+		return this._coreApi.getLayout().width;
 	}
 
 	/**
 	 * Retrieves the pixel height of the specific chart pane this tool is attached to.
 	 * 
-	 * @returns The current height in pixels.
+	 * This method automatically identifies the tool's parent pane from the 
+	 * unified layout snapshot using its series reference.
+	 * 
+	 * @returns The specific pane height in pixels.
 	 */
 	public getChartDrawingHeight(): number {
-		this._updatePaneDimensionsCache();
-		return this._cachedPaneHeight;
+		const layout = this._coreApi.getLayout();
+		
+		// Find the specific pane in the snapshot that contains this tool's series
+		const myPane = layout.panes.find(p => p.series.indexOf(this._series) !== -1);
+		
+		// Return the specific height, or 0 if not found (e.g. during a series move)
+		return myPane ? myPane.height : 0;
 	}
 }

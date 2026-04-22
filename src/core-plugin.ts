@@ -38,6 +38,39 @@ import { PriceAxisLabelStackingManager } from './model/price-axis-label-stacking
 import { CrosshairTimeAxisLabelView } from './views/crosshair-time-axis-label-view';
 
 /**
+ * Represents the physical layout and series mapping for a single chart pane.
+ * 
+ * This structure links a specific Lightweight Charts pane to its calculated 
+ * screen coordinates and the data series it contains.
+ */
+export interface PaneLayout {
+	/** The native Lightweight Charts API reference for the pane. */
+	paneApi: any;
+	/** The vertical pixel offset (Y-coordinate) from the top of the chart container to the start of this pane. */
+	top: number;    
+	/** The internal drawing height of the pane in pixels, excluding the time scale area. */
+	height: number; 
+	/** A collection of ISeriesApi instances currently residing within this specific pane. */
+	series: any[];  
+}
+
+/**
+ * A holistic, point-in-time snapshot of the entire chart's physical dimensions and pane structure.
+ * 
+ * This object serves as the "Single Source of Truth" for layout-dependent calculations 
+ * (like hit testing and culling), ensuring that dimensions are synchronized across 
+ * the entire plugin during a single render frame.
+ */
+export interface ChartLayoutSnapshot {
+	/** The high-resolution timestamp (via performance.now()) indicating when this measurement was performed. */
+	timestamp: number;
+	/** The global drawing width of all chart panes in pixels, accurately excluding the width of the price axis. */
+	width: number;
+	/** An array containing the individual layout details for every pane currently present in the chart. */
+	panes: PaneLayout[];
+}
+
+/**
  * The main implementation of the Line Tools Core Plugin.
  *
  * This class acts as the central controller for adding, managing, and interacting with line tools
@@ -59,6 +92,67 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	private readonly _interactionManager: InteractionManager<HorzScaleItem>;
 	private readonly _priceAxisLabelStackingManager: PriceAxisLabelStackingManager<HorzScaleItem>;
 	private readonly _crosshairTimeView: CrosshairTimeAxisLabelView<HorzScaleItem>;
+
+	private _layoutSnapshot: ChartLayoutSnapshot | null = null;
+
+	/**
+	 * Retrieves a unified layout snapshot of the entire chart.
+	 * 
+	 * ### Performance
+	 * If the snapshot is less than 16ms old (approx. 1 frame), it returns the 
+	 * cached version. Otherwise, it performs a single, holistic measurement 
+	 * of all panes and dimensions.
+	 * 
+	 * @returns The current {@link ChartLayoutSnapshot}.
+	 */
+	public getLayout(): ChartLayoutSnapshot {
+		const now = performance.now();
+		
+		// If snapshot is fresh (less than 1 frame old), return it immediately.
+		if (this._layoutSnapshot && (now - this._layoutSnapshot.timestamp < 100)) {
+			return this._layoutSnapshot;
+		}
+
+		// --- SLOW PATH: MEASURE DOM ---
+		//console.count("[Master-Layout] Measuring DOM width, height");
+
+		// We measure the whole chart exactly once.
+		const chartElement = this._chart.chartElement();
+		const chartRect = chartElement.getBoundingClientRect();
+		
+		// Use LWC native width (the most accurate for excluding price axis)
+		const drawingWidth = this._chart.paneSize().width;
+
+		const snapshot: ChartLayoutSnapshot = {
+			timestamp: now,
+			width: drawingWidth,
+			panes: []
+		};
+
+		try {
+			// Extract dimensions for every pane currently in the chart
+			const panes = (this._chart as any).panes?.();
+			if (panes) {
+				panes.forEach((pane: any) => {
+					const paneEl = pane.getHTMLElement?.();
+					if (paneEl) {
+						const rect = paneEl.getBoundingClientRect();
+						snapshot.panes.push({
+							paneApi: pane,
+							top: rect.top - chartRect.top,
+							height: paneEl.clientHeight,
+							series: pane.getSeries?.() || []
+						});
+					}
+				});
+			}
+		} catch (e) { 
+			// Fail silently; if DOM is inaccessible, return existing or empty snapshot
+		}
+
+		this._layoutSnapshot = snapshot;
+		return snapshot;
+	}
 
 	/**
 	 * Optional user-provided function for formatting time axis labels.

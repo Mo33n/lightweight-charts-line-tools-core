@@ -251,12 +251,15 @@ Fires when a tool is selected or when the current selection is cleared.
 
 ## Manual Crosshair Control
 
-#### `setCrossHairXY(x, y, visible, providedTime?)`
-Programmatically positions the chart crosshair using screen pixel coordinates. The Core handles the conversion to logical time and price using its internal interpolation engine. 
+#### `setCrossHairXY(x, y, visible, providedTime?, providedPrice?)`
+Programmatically positions the chart crosshair. The Core can either convert screen pixels to data or use provided logical values for direct placement.
 
 - **`x`, `y`**: The screen pixel coordinates relative to the chart container.
 - **`visible`**: Controls the visibility of the crosshair.
-- **`providedTime`**: (Optional) For high-performance synchronization. Pass the raw timestamp/time object from a source chart event here. This bypasses pixel-to-time estimation and prevents the vertical crosshair line from "jumping" or jittering when syncing across multiple chart instances with different scales or zooms.
+- **`providedTime`**: (Optional) The logical time value (timestamp or date string).
+- **`providedPrice`**: (Optional) The logical numerical price value.
+
+Note on Synchronization: Providing both providedTime and providedPrice triggers a Direct Sync Bypass. This ignores internal pixel-to-price estimation and magnet snapping, placing the crosshair exactly on the data coordinates. This is the most efficient method for syncing "slave" charts to a "master" chart to ensure zero jitter and perfect alignment.
 
 #### `clearCrossHair()`
 Clears the chart's crosshair, making it invisible.

@@ -151,26 +151,22 @@ export abstract class LineToolPaneView<HorzScaleItem> implements IUpdatablePaneV
 	 * @override
 	 */
 	public renderer(): IPaneRenderer | null {
-		// --- PHASE 1: DESTRUCTION GUARD ---
 		if ((this._tool as any)._isDestroying) {
 			return null;
 		}
 
 		if (this._invalidated) {
-			// --- PHASE 2: DIMENSION ACQUISITION ---
-			// We use the tool's methods to get dimensions. These are now safe 
-			// from layout thrashing thanks to the 16ms shared cache.
+			// REFINEMENT: Use the tool's cached dimensions.
+			// getChartDrawingWidth() now returns the native LWC 'paneSize().width',
+			// which automatically excludes the price axis (fixing the text bleed bug).
 			const height = this._tool.getChartDrawingHeight();
 			const width = this._tool.getChartDrawingWidth();
 
-			// --- PHASE 3: SIZE VALIDATION ---
-			// If the chart/pane has no physical size, we clear the renderer and exit.
 			if (height <= 0 || width <= 0) {
 				(this._renderer as CompositeRenderer<HorzScaleItem>).clear();
 				return null;
 			}
 
-			// --- PHASE 4: UPDATE IMPLEMENTATION ---
 			this._updateImpl(height, width);
 			this._invalidated = false;
 		}
