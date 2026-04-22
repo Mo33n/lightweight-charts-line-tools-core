@@ -440,6 +440,7 @@ export class InteractionManager<HorzScaleItem> {
 	 * @returns The snapped Y coordinate if within threshold, otherwise the raw Y.
 	 * @private
 	 */
+	/*
 	private _getSnappedY(x: number, y: number): number {
 
 		// 1. Identify the tool currently being touched
@@ -500,7 +501,101 @@ export class InteractionManager<HorzScaleItem> {
 		// 6. Apply the threshold gate.
 		// Use effectiveThreshold here to gate the final snap.
 		return minDistance <= effectiveThreshold ? nearestY : y;
-	}	
+	}
+	*/
+
+	/**
+	 * Calculates the "Snapped" Y-coordinate based on data in the current pane.
+	 * 
+	 * This universal engine:
+	 * 1. Identifies the specific pane the mouse is currently over.
+	 * 2. Retrieves the global logical index (the exact candle column) for the mouse X position.
+	 * 3. Scans ALL series in that pane for data at that exact logical index.
+	 * 4. Respects the Priority: [Tool-Specific Threshold] > [Global Threshold].
+	 * 
+	 * @param x - The global screen X coordinate.
+	 * @param y - The global screen Y coordinate.
+	 * @returns The snapped Y coordinate if within threshold, otherwise the raw Y.
+	 * @private
+	 */
+	private _getSnappedY(x: number, y: number): number {
+		// --- 1. DETERMINE EFFECTIVE THRESHOLD ---
+		// We prioritize the specific tool currently being manipulated.
+		const activeTool = this._draggedTool || this._currentToolCreating;
+		const toolThreshold = activeTool?.options().magnetThreshold;
+		
+		const effectiveThreshold = (toolThreshold !== undefined && toolThreshold > 0) 
+			? toolThreshold 
+			: this._plugin.getMagnetThreshold();
+
+		// Exit early if snapping is disabled globally and locally
+		if (effectiveThreshold <= 0) return y;
+
+		// --- 2. IDENTIFY THE PANE UNDER MOUSE ---
+		const layout = this._plugin.getLayout();
+		const targetPane = layout.panes.find(p => y >= p.top && y <= (p.top + p.height));
+		
+		// If the mouse isn't inside a valid drawing pane (e.g. over a separator), don't snap.
+		if (!targetPane) return y;
+		const paneTop = targetPane.top;
+
+		// --- 3. GET EXACT LOGICAL COLUMN ---
+		// We ask the timescale for the exact vertical column (index) the mouse is over.
+		const timeScale = this._chart.timeScale();
+		const logical = timeScale.coordinateToLogical(x as Coordinate);
+		if (logical === null) return y;
+		
+		// Round it so we strictly snap to the center of the nearest candle.
+		const roundedLogical = Math.round(logical);
+
+		// --- 4. GATHER CANDIDATE POINTS FROM ALL SERIES IN THIS PANE ---
+		const candidates: { y: number }[] =[];
+
+		targetPane.series.forEach((s: ISeriesApi<SeriesType, HorzScaleItem>) => {
+			// Use the rounded logical index to grab the exact data point for this vertical column
+			const dataAtTime = s.dataByIndex(roundedLogical as any, 0) as any;
+			if (!dataAtTime) return;
+
+			// Handle OHLC Series (Candlesticks/Bars)
+			if (dataAtTime.close !== undefined) {
+				const ohlc =[dataAtTime.open, dataAtTime.high, dataAtTime.low, dataAtTime.close];
+				ohlc.forEach(val => {
+					if (val !== undefined) {
+						const localY = s.priceToCoordinate(val);
+						if (localY !== null) {
+							candidates.push({ y: localY + paneTop });
+						}
+					}
+				});
+			} 
+			// Handle Single-Value Series (Line, Area, Baseline, Histogram, etc.)
+			else if (dataAtTime.value !== undefined) {
+				const localY = s.priceToCoordinate(dataAtTime.value);
+				if (localY !== null) {
+					candidates.push({ y: localY + paneTop });
+				}
+			}
+		});
+
+		if (candidates.length === 0) return y;
+
+		// --- 5. FIND THE CLOSEST CANDIDATE ---
+		// If multiple series overlap, we find the absolute closest pixel to the mouse.
+		let nearestY = y;
+		let minDistance = Infinity;
+
+		for (const candidate of candidates) {
+			const distance = Math.abs(y - candidate.y);
+			if (distance < minDistance) {
+				minDistance = distance;
+				nearestY = candidate.y;
+			}
+		}
+
+		// --- 6. GATE BY THRESHOLD ---
+		// Only "Snap" if the closest data point is within our pixel threshold.
+		return minDistance <= effectiveThreshold ? nearestY : y;
+	}
 
 	/**
 	 * Finalizes the interactive creation of a tool once its required number of points have been placed.
