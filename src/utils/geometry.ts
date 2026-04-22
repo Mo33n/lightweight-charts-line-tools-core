@@ -1074,47 +1074,42 @@ export function interpolateTimeFromLogicalIndex<HorzScaleItem>(
 
 
 /**
- * **Critical Core Utility: Viewport & Culling Bounds**
+ * **Critical Core Utility: Viewport & Culling Price Range**
  * 
- * Calculates the *absolute* visible price range of the chart pane, mapping the physical top and bottom pixel 
- * edges directly to price values.
+ * Calculates the *absolute* visible price range of the specific chart pane 
+ * where this tool is located. It maps the physical top (y=0) and bottom 
+ * (y=height) pixel edges directly to price values.
  * 
- * ### The Problem it Solves
- * The standard `priceScale.getVisiblePriceRange()` method often accounts for margins or auto-scaling logic, 
- * which might imply the visible area is smaller than the actual canvas. For **Culling** (determining if a tool is off-screen) 
- * and **Infinite Geometries** (drawing Vertical Lines or Rays), we need to know the exact price at pixel `0` (top) 
- * and pixel `height` (bottom).
- * 
- * ### Interplay & Importance
- * * **Culling:** This function provides the `minPrice` and `maxPrice` for the {@link ToolBoundingBox} used in `src/utils/culling-helpers.ts`. 
- *   Without this, tools might disappear prematurely when scrolling.
- * * **Rendering:** It ensures that infinite lines are drawn strictly to the edge of the canvas, preventing visual artifacts or gaps.
+ * ### Multi-Pane & Performance Optimization
+ * This function utilizes the tool's internal micro-cached dimensions. This provides 
+ * two critical benefits over manual DOM measurement:
+ * 1. **Pane Awareness:** It correctly identifies the height of the specific sub-pane 
+ *    (e.g., an RSI or Volume pane) instead of assuming the height of the entire chart.
+ * 2. **Layout Thrashing Protection:** It avoids redundant DOM measurements by 
+ *    leveraging the tool's shared 16ms dimension cache, ensuring smooth 60fps performance.
  * 
  * @typeParam HorzScaleItem - The type of the horizontal scale item.
- * @param tool - The tool instance (provides access to the Chart, Series, and Pane dimensions).
- * @returns An object containing `from` (bottom price) and `to` (top price), or `null` if the chart isn't ready.
+ * @param tool - The tool instance providing context and access to the micro-cached pane height.
+ * @returns An object containing `from` (the price at the bottom edge) and `to` (the price at the top edge), or `null` if the series is not ready.
  */
-export function getExtendedVisiblePriceRange<HorzScaleItem>(tool: BaseLineTool<HorzScaleItem>): { from: BarPrice | null; to: BarPrice | null; } | null {
-    
-    const chart = tool.getChart();
-    const series = tool.getSeries();
+export function getExtendedVisiblePriceRange<HorzScaleItem>(
+	tool: BaseLineTool<HorzScaleItem>
+): { from: BarPrice | null; to: BarPrice | null; } | null {
+	// Retrieve the series reference from the tool
+	const series = tool.getSeries();
 
-    // 1. Get total widget height from the root element
-    const totalHeight = chart.chartElement().clientHeight;
+	// --- PHASE: DIMENSION ACQUISITION ---
+	// We call the tool's cached method. If 100 tools call this in the same frame, 
+	// only the first one hits the DOM; the rest get the value from the static cache.
+	const paneHeight = tool.getChartDrawingHeight();
 
-    // 2. Get the time scale height (this is the height of the whole time axis widget)
-    // NOTE: We rely on the internal height property for the Time Scale widget.
-    const timeScaleHeight = chart.timeScale().height() || 0; 
-
-    // 3. Calculate the Pane Drawing Height: Total Height - Time Axis Height
-    // This value is what the coordinate system is based on (0 to PaneHeight).
-    const paneHeight = totalHeight - timeScaleHeight;
-
-    // 4. Calculate price range using the calculated pane height
-    return {
-        from: series.coordinateToPrice(paneHeight as Coordinate), // Price at bottom
-        to: series.coordinateToPrice(0 as Coordinate),           // Price at top
-    };
+	// --- PHASE: COORDINATE MAPPING ---
+	// Map the physical pixel boundaries back to logical prices.
+	// 'from' is the bottom (highest pixel Y), 'to' is the top (lowest pixel Y).
+	return {
+		from: series.coordinateToPrice(paneHeight as Coordinate),
+		to: series.coordinateToPrice(0 as Coordinate),
+	};
 }
 
 /**

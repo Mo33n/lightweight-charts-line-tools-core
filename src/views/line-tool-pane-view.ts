@@ -142,37 +142,41 @@ export abstract class LineToolPaneView<HorzScaleItem> implements IUpdatablePaneV
     }
 
     /**
-     * Retrieves the renderer for the current frame.
-     * 
-     * If the view is invalidated, this method triggers `_updateImpl` to refresh the
-     * rendering logic before returning the renderer.
-     * 
-     * @returns The {@link IPaneRenderer} to be drawn, or `null` if nothing should be rendered.
-     */
-    public renderer(): IPaneRenderer | null {
-
-        // DEFENSIVE: Access the parent tool's destruction state. 
-		// We use a cast here because the property is private/protected on the Base class.
+	 * Retrieves the renderer for the current frame.
+	 * 
+	 * This override optimizes performance by utilizing the tool's micro-cached 
+	 * dimensions instead of hitting the DOM directly during the update cycle.
+	 * 
+	 * @returns The {@link IPaneRenderer} to be drawn, or `null` if nothing should be rendered.
+	 * @override
+	 */
+	public renderer(): IPaneRenderer | null {
+		// --- PHASE 1: DESTRUCTION GUARD ---
 		if ((this._tool as any)._isDestroying) {
 			return null;
 		}
 
-        if (this._invalidated) {
-            const chartElement = this._chart.chartElement();
-            const height = chartElement.clientHeight;
-            const width = chartElement.clientWidth;
+		if (this._invalidated) {
+			// --- PHASE 2: DIMENSION ACQUISITION ---
+			// We use the tool's methods to get dimensions. These are now safe 
+			// from layout thrashing thanks to the 16ms shared cache.
+			const height = this._tool.getChartDrawingHeight();
+			const width = this._tool.getChartDrawingWidth();
 
-            // If the chart has no size, there is nothing to draw.
-            if (height <= 0 || width <= 0) {
-                (this._renderer as CompositeRenderer<HorzScaleItem>).clear();
-                return null;
-            }
+			// --- PHASE 3: SIZE VALIDATION ---
+			// If the chart/pane has no physical size, we clear the renderer and exit.
+			if (height <= 0 || width <= 0) {
+				(this._renderer as CompositeRenderer<HorzScaleItem>).clear();
+				return null;
+			}
 
-            this._updateImpl(height, width);
-            this._invalidated = false;
-        }
-        return this._renderer;
-    }
+			// --- PHASE 4: UPDATE IMPLEMENTATION ---
+			this._updateImpl(height, width);
+			this._invalidated = false;
+		}
+
+		return this._renderer;
+	}
 
     /**
      * Converts the tool's logical points (Time/Price) into screen coordinates (Pixels).
