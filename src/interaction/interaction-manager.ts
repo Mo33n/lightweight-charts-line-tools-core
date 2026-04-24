@@ -18,7 +18,7 @@ import { ToolRegistry } from '../model/tool-registry';
 import { LineToolPartialOptionsMap, LineToolType, InteractionPhase, HitTestType, HitTestResult, SnapAxis, FinalizationMethod, PaneCursorType } from '../types';
 import { Point, interpolateTimeFromLogicalIndex, interpolateLogicalIndexFromTime } from '../utils/geometry';
 import { LineToolPoint } from '../api/public-api';
-import { ensureNotNull, deepCopy } from '../utils/helpers';
+import { ensureNotNull, deepCopy, roundPriceToStep } from '../utils/helpers';
 
 
 /**
@@ -73,7 +73,7 @@ export class InteractionManager<HorzScaleItem> {
 	private _lastCrosshairX: Coordinate | null = null;
 
 	private _lastSnapLogical: number | null = null;
-	private _lastSnapCandidates: { y: number }[] = [];
+	private _lastSnapCandidates: { y: number; price: number }[] = [];
 
 	/**
 	 * Lock State — when true, all mouse interactions are suppressed.
@@ -139,66 +139,61 @@ export class InteractionManager<HorzScaleItem> {
 		this._subscribeToChartEvents();
 	}
 
-	/**
-	 * Converts raw screen coordinates (in pixels) to a logical {@link LineToolPoint} (timestamp/price).
-	 *
-	 * ### The "Truth-First" Tiered Logic
-	 * This method ensures the line tool perfectly tracks the user's mouse:
-	 * 
-	 * 1. **The Witness (Actual Data):** It first uses `getBarAtCoordinate` (an O(1) lookup) to snap 
-	 *    to the exact timestamp of an existing candle. This guarantees alignment with the native crosshair 
-	 *    and flawlessly handles weekend gaps.
-	 * 
-	 * 2. **The Estimator (Interpolation):** If hovering in the "blank space", it relies on the optimized 
-	 *    `interpolateTimeFromLogicalIndex` to linearly project the time forward from the last known candle.
-	 *
-	 * @param screenPoint - The screen coordinates as a {@link Point} object.
-	 * @returns A {@link LineToolPoint} containing a timestamp and price, or `null` if the conversion fails.
-	 */
 	public screenPointToLineToolPoint(screenPoint: Point): LineToolPoint | null {
 		const timeScale = this._chart.timeScale();
 
 		// --- 1. DETERMINE INPUT Y (Price) ---
+		// FIX: Explicitly typed as Coordinate to resolve arithmetic errors
+		let targetY: Coordinate = screenPoint.y as Coordinate;
+		let snappedPrice: number | undefined = undefined;
+
 		// Prioritize Shift Key constraint over the Magnet Engine
-		const targetY = this._isShiftKeyDown 
-			? screenPoint.y 
-			: this._getSnappedY(screenPoint.x, screenPoint.y);
-
-		// --- NEW: THE MULTI-PANE OFFSET NORMALIZATION ---
-		// coordinateToPrice() strictly expects a Y-value relative to the top of its own specific pane.
-		// Because targetY is chart-relative, we MUST subtract the physical distance
-		// between the top of the chart and the top of the pane.
-		let normalizedY = targetY - this._getActivePaneYOffset();
-
-		// --- NEW: BOUNDARY CLAMPING ---
-		// If the user drags the mouse into another pane, we clamp the Y-coordinate
-		// to the top or bottom of THIS pane. This creates a solid "wall" so the drawing 
-		// doesn't disappear or calculate wild prices in other panes.
-		const paneHeight = this._getActivePaneHeight();
-		if (normalizedY < 0) {
-			normalizedY = 0;
-		} else if (normalizedY > paneHeight) {
-			normalizedY = paneHeight;
+		if (!this._isShiftKeyDown) {
+			const snapResult = this._getSnappedY(screenPoint.x, screenPoint.y);
+			targetY = snapResult.y;
+			snappedPrice = snapResult.price;
 		}
 
-		const price = this._series.coordinateToPrice(normalizedY as Coordinate);			
+		// --- THE MULTI-PANE OFFSET NORMALIZATION ---
+		// We cast to number for the subtraction, then back to Coordinate for LWC
+		let normalizedY = (targetY - this._getActivePaneYOffset()) as Coordinate;
 
+		// --- BOUNDARY CLAMPING ---
+		const paneHeight = this._getActivePaneHeight();
+		if (normalizedY < 0) {
+			normalizedY = 0 as Coordinate;
+			snappedPrice = undefined; 
+		} else if (normalizedY > paneHeight) {
+			normalizedY = paneHeight as Coordinate;
+			snappedPrice = undefined; 
+		}
+
+		const rawPrice = this._series.coordinateToPrice(normalizedY);			
 		const logical = timeScale.coordinateToLogical(screenPoint.x as Coordinate);
-	 
-		if (logical === null || price === null) {
+	
+		if (logical === null || rawPrice === null) {
 			return null;
 		}
 
-		// --- 2. TIERED TIME LOOKUP ---
-		let finalTime: any = null;
+		// --- INTERJECTED ROUNDING LOGIC ---
+		// 1. If we have a snapped price from a candle, it is already the 'Truth'.
+		// 2. Otherwise, we round the rawPrice using our central helper.
+		let finalPrice: number;
+		if (snappedPrice !== undefined) {
+			finalPrice = snappedPrice;
+		} else {
+			const options = this._series.options() as any;
+			const minMove = options?.priceFormat?.minMove || 0.01;
+			finalPrice = roundPriceToStep(rawPrice as number, minMove);
+		}
 
-		// Tier 1: Look for Actual Data (The Native Truth)
+		// --- 2. TIERED TIME LOOKUP [Identical to Original] ---
+		let finalTime: any = null;
 		const barAtCoordinate = this._plugin.getBarAtCoordinate(screenPoint.x);
 
 		if (barAtCoordinate) {
 			finalTime = barAtCoordinate.time;
 		} else {
-			// Tier 2: Future/Past Estimation
 			finalTime = interpolateTimeFromLogicalIndex(this._chart, this._series, logical);
 		}
 
@@ -209,7 +204,7 @@ export class InteractionManager<HorzScaleItem> {
 		// --- 3. FORMAT AND RETURN ---
 		return {
 			timestamp: this._horzScaleBehavior.key(finalTime as HorzScaleItem) as number,
-			price: price as number,
+			price: finalPrice,
 		};
 	}	
 
@@ -432,8 +427,15 @@ export class InteractionManager<HorzScaleItem> {
 	}
 
 	/**
-	 * Calculates the "Snapped" Y-coordinate based on data in the active pane, 
+	 * Calculates the "Snapped" Y-coordinate and exact price based on data in the active pane, 
 	 * utilizing a high-performance column cache with a "Live Candle Bypass."
+	 * 
+	 * ### Precision Fix: The "Native Truth" Pattern
+	 * To prevent line tools from storing weird floats (e.g., 12.3123 instead of 12.25), 
+	 * this engine now captures the exact numeric price directly from the series data 
+	 * before it is converted to pixels. This object is returned to the caller so 
+	 * that the "Round Trip" (Price -> Pixel -> Price) conversion—which is prone to 
+	 * floating point math errors—is bypassed entirely.
 	 * 
 	 * ### Efficiency & Real-Time Accuracy
 	 * To maintain high performance during vertical mouse wiggles, this engine caches 
@@ -451,10 +453,10 @@ export class InteractionManager<HorzScaleItem> {
 	 * 
 	 * @param x - The global screen X coordinate in pixels.
 	 * @param y - The global screen Y coordinate in pixels.
-	 * @returns The snapped Y coordinate if within threshold; otherwise the original Y.
+	 * @returns An object containing the snapped Y Coordinate and the exact Price value.
 	 * @private
 	 */
-	private _getSnappedY(x: number, y: number): number {
+	private _getSnappedY(x: number, y: number): { y: Coordinate; price?: number } {
 		// --- 1. THRESHOLD RESOLUTION ---
 		const activeTool = this._draggedTool || this._currentToolCreating;
 		const toolThreshold = activeTool?.options().magnetThreshold;
@@ -462,16 +464,17 @@ export class InteractionManager<HorzScaleItem> {
 			? toolThreshold 
 			: this._plugin.getMagnetThreshold();
 
-		if (effectiveThreshold <= 0) return y;
+		// If snapping is disabled, return the raw mouse Y as a Coordinate.
+		if (effectiveThreshold <= 0) return { y: y as Coordinate };
 
 		// --- 2. PANE & COLUMN RESOLUTION ---
 		const layout = this._plugin.getLayout();
 		const targetPane = layout.panes.find(p => y >= p.top && y <= (p.top + p.height));
-		if (!targetPane) return y;
+		if (!targetPane) return { y: y as Coordinate };
 
 		const timeScale = this._chart.timeScale();
 		const logical = timeScale.coordinateToLogical(x as Coordinate);
-		if (logical === null) return y;
+		if (logical === null) return { y: y as Coordinate };
 		const roundedLogical = Math.round(logical);
 
 		// --- 3. LIVE CANDLE DETECTION ---
@@ -486,20 +489,14 @@ export class InteractionManager<HorzScaleItem> {
 		}
 
 		// --- 4. CACHE ARBITRATION & LOGGING ---
-		let candidates: { y: number }[] = [];
+		// We store the exact price alongside the Y pixel to ensure mathematical consistency.
+		let candidates: { y: number; price: number }[] = [];
 
 		if (!isLiveCandle && this._lastSnapLogical === roundedLogical) {
 			// --- FAST PATH: CACHE HIT ---
-			//console.log(`[Magnet] Cache Hit: Reusing ${this._lastSnapCandidates.length} points for historical column ${roundedLogical}`);
-			candidates = this._lastSnapCandidates;
+			candidates = this._lastSnapCandidates as { y: number; price: number }[];
 		} else {
 			// --- SLOW PATH: DATA SCAN ---
-			if (isLiveCandle) {
-				//console.log(`[Magnet] Live Bypass: Fetching fresh data for updating candle at column ${roundedLogical}`);
-			} else {
-				//console.log(`[Magnet] Cache Miss: Scanning new historical column ${roundedLogical}`);
-			}
-
 			const paneTop = targetPane.top;
 
 			targetPane.series.forEach((s: ISeriesApi<SeriesType, HorzScaleItem>) => {
@@ -507,41 +504,56 @@ export class InteractionManager<HorzScaleItem> {
 				if (!dataAtTime) return;
 
 				if (dataAtTime.close !== undefined) {
+					// OHLC Candle Data: Extract all 4 potential snap points
 					const ohlc = [dataAtTime.open, dataAtTime.high, dataAtTime.low, dataAtTime.close];
 					for (const val of ohlc) {
 						if (val !== undefined) {
 							const localY = s.priceToCoordinate(val);
-							if (localY !== null) candidates.push({ y: localY + paneTop });
+							// Store the native price (val) next to the calculated pixel (localY)
+							if (localY !== null) candidates.push({ y: localY + paneTop, price: val });
 						}
 					}
 				} else if (dataAtTime.value !== undefined) {
+					// Line/Area Series: Snap to the single data value
 					const localY = s.priceToCoordinate(dataAtTime.value);
-					if (localY !== null) candidates.push({ y: localY + paneTop });
+					if (localY !== null) candidates.push({ y: localY + paneTop, price: dataAtTime.value });
 				}
 			});
 
-			// Only store in the cache if this is a historical candle.
+			// Only store in the persistent cache if this is a historical (static) candle.
 			if (!isLiveCandle) {
 				this._lastSnapLogical = roundedLogical;
 				this._lastSnapCandidates = candidates;
 			}
 		}
 
-		if (candidates.length === 0) return y;
+		if (candidates.length === 0) return { y: y as Coordinate };
 
 		// --- 5. PROXIMITY MATH ---
 		let nearestY = y;
+		let nearestPrice: number | undefined = undefined;
 		let minDistance = Infinity;
 
 		for (let i = 0; i < candidates.length; i++) {
-			const dist = Math.abs(y - candidates[i].y);
+			const cand = candidates[i];
+			const dist = Math.abs(y - cand.y);
 			if (dist < minDistance) {
 				minDistance = dist;
-				nearestY = candidates[i].y;
+				nearestY = cand.y;
+				nearestPrice = cand.price; // Capture the exact price associated with this pixel
 			}
 		}
 
-		return minDistance <= effectiveThreshold ? nearestY : y;
+		// If the closest point is within the threshold, return the snapped position and price.
+		if (minDistance <= effectiveThreshold) {
+			return { 
+				y: nearestY as Coordinate, 
+				price: nearestPrice 
+			};
+		}
+
+		// Fallback to original mouse position
+		return { y: y as Coordinate };
 	}
 
 	/**
@@ -586,7 +598,7 @@ export class InteractionManager<HorzScaleItem> {
 		this._chart.applyOptions({ handleScroll: { pressedMouseMove: true } });
 		
 		this._plugin.requestUpdate();
-		console.log(`[InteractionManager] Tool creation finalized: ${tool.id()}`);
+		//console.log(`[InteractionManager] Tool creation finalized: ${tool.id()}`);
 	}
 
 	/**
@@ -620,7 +632,7 @@ export class InteractionManager<HorzScaleItem> {
 			
 			// Immediately disable chart scroll as we've captured the gesture
 			this._chart.applyOptions({ handleScroll: { pressedMouseMove: false } });
-			console.log(`[InteractionManager] Creation gesture started for ${this._creationTool.id()}`);
+			//console.log(`[InteractionManager] Creation gesture started for ${this._creationTool.id()}`);
 
 			// Since the logic for 1-point tools is now in MouseUp, we just return here.
 			return;
@@ -722,7 +734,7 @@ export class InteractionManager<HorzScaleItem> {
 
 			this._chart.applyOptions({ handleScroll: { pressedMouseMove: false } });
 
-			console.log(`[InteractionManager] Mouse Down: Starting gesture on tool ${hitResult.tool.id()}`);
+			//console.log(`[InteractionManager] Mouse Down: Starting gesture on tool ${hitResult.tool.id()}`);
 		}
 	}	
 
@@ -957,6 +969,10 @@ export class InteractionManager<HorzScaleItem> {
 
 					const newLogicalPoints: LineToolPoint[] = [];
 
+					// --- ROUNDING INJECTION: Extract minMove for translation ---
+					const seriesOptions = this._series.options() as any;
+					const minMove = seriesOptions?.priceFormat?.minMove || 0.01;
+
 					// 5. Apply the Logical Translation Vector to all original points.
 					for (let i = 0; i < this._originalDragPoints.length; i++) {
 						const originalLogicalPoint = this._originalDragPoints[i];
@@ -978,7 +994,8 @@ export class InteractionManager<HorzScaleItem> {
 
 						const translatedLogicalPoint: LineToolPoint = {
 							timestamp: newTimestamp,
-							price: originalLogicalPoint.price + priceTranslationVector,
+							// --- ROUNDING INJECTION: Clean the arithmetic result ---
+							price: roundPriceToStep(originalLogicalPoint.price + priceTranslationVector, minMove),
 						};
 
 						newLogicalPoints.push(translatedLogicalPoint);
@@ -1030,7 +1047,7 @@ export class InteractionManager<HorzScaleItem> {
 
 		// Flag to indicate if a specific interaction flow was handled.
 		let handledInteraction = false;
- 
+
 		// --- 1. Finalize Creation Click/Drag ---
 		if (this._isCreationGesture && this._creationTool && this._mouseDownPoint) {
 
@@ -1043,9 +1060,9 @@ export class InteractionManager<HorzScaleItem> {
 
 			// Determine finalization method once
 			const finalizationMethod = tool.getFinalizationMethod();
- 
+
 			const endPoint = point || this._mouseDownPoint;
- 
+
 			// Start with the raw screen point
 			let finalScreenPoint: Point = endPoint;
 
@@ -1094,7 +1111,7 @@ export class InteractionManager<HorzScaleItem> {
 					// We override the drag state to false. This forces the upcoming check for 
 					// "isDiscreteClick" to evaluate as true, effectively treating the quick drag as a point click.
 					isDiscreteClick = true; 
-					console.log(`[InteractionManager] Downgrade: Drag treated as discrete click to add point ${permanentPointsCount + 1}.`);
+					//console.log(`[InteractionManager] Downgrade: Drag treated as discrete click to add point ${permanentPointsCount + 1}.`);
 				}
 			}			
 
@@ -1138,18 +1155,18 @@ export class InteractionManager<HorzScaleItem> {
                 
                 // VARIABLE TO CAPTURE HINT
                 let snapAxis: SnapAxis = 'none';
- 
+
 				if (isShiftKeyDown && isShiftConstraintSupported) {
 
 					// Determine the index of the point that is *about to be added* (P1 if P0 exists)
 					const anchorIndexBeingAdded = tool.getPermanentPointsCount();
- 
+
 					// The constraint source point is always P0 (index 0)
 					const anchorIndexUsedForConstraint = 0;
- 
+
 					// Retrieve the original Logical P0 point for the constraint calculation
 					const originalLogicalPoint = tool.getPoint(anchorIndexUsedForConstraint);
- 
+
 					// We need a safe points array to pass to the method
 					const allOriginalLogicalPoints = [originalLogicalPoint] as LineToolPoint[];
 
@@ -1174,7 +1191,7 @@ export class InteractionManager<HorzScaleItem> {
                 // --- START SYNCHRONOUS LOGICAL SNAP FIX ---
 				// 1. Convert the (potentially) constrained screen point into a logical point
 				let finalLogicalPoint: LineToolPoint | null = this.screenPointToLineToolPoint(finalScreenPoint);
-				console.log('finalLogicalPoint after let', JSON.parse(JSON.stringify(finalLogicalPoint)))
+				//console.log('finalLogicalPoint after let', JSON.parse(JSON.stringify(finalLogicalPoint)))
 
                 // Check if we are placing P1 (point index 1) which is where the constraint applies
                 const isP1Click = tool.getPermanentPointsCount() === 1; 
@@ -1216,7 +1233,7 @@ export class InteractionManager<HorzScaleItem> {
 				//GOTCHA i suspect that since the ghost creation of a tool for point1 (then 2nd point) actually modifies _points.
 				//meaning the ghost does inject the ghost point into _points index 1 (2nd entry), so if we then tool.addPoint, then the constrained point
 				// would be actually index 2 (3rd entry) in _points which is not what we want.
-				console.log('finalLogicalPoint before if statement', JSON.parse(JSON.stringify(finalLogicalPoint)))
+				//console.log('finalLogicalPoint before if statement', JSON.parse(JSON.stringify(finalLogicalPoint)))
 				if (finalLogicalPoint) {
 					tool.addPoint(finalLogicalPoint);
 				} else {
@@ -1231,7 +1248,7 @@ export class InteractionManager<HorzScaleItem> {
 					// --- FIX: Return immediately after finalization ---
 					return;
 				} else {
-					console.log(`[InteractionManager] Click-Click: Placed Point ${tool.points().length}. Waiting for next point.`);
+					//console.log(`[InteractionManager] Click-Click: Placed Point ${tool.points().length}. Waiting for next point.`);
 				}
 
 			} else if (this._isDrag) {
@@ -1262,19 +1279,19 @@ export class InteractionManager<HorzScaleItem> {
 			// Always reset gesture-specific flags after a creation mouseup
 			this._resetCreationGestureStateOnly();
 			return; // Handled creation flow
- 
+
 		}
 
 		// --- 2. Finalize Editing Click/Drag ---
 		if (this._draggedTool && this._dragStartPoint) {
 			if (this._isEditing) { // It was an EDITING DRAG
-				console.log(`[InteractionManager] Mouse Up after edit drag: Finalizing for tool ${this._draggedTool.id()}`);
+				//console.log(`[InteractionManager] Mouse Up after edit drag: Finalizing for tool ${this._draggedTool.id()}`);
 				this._plugin.fireAfterEditEvent(this._draggedTool, 'lineToolEdited');
 
 				const tool = this._draggedTool as BaseLineTool<HorzScaleItem> & { normalize?: () => void };
 				if (tool.normalize) { tool.normalize(); }
 			} else { // It was a discrete CLICK ON AN EXISTING TOOL (selection)
-				console.log(`[InteractionManager] Mouse Up: Discrete click on existing tool ${this._draggedTool.id()}. Attempting selection.`);
+				//console.log(`[InteractionManager] Mouse Up: Discrete click on existing tool ${this._draggedTool.id()}. Attempting selection.`);
 				this._handleStandaloneClick(this._dragStartPoint); 
 			}
 
@@ -1282,12 +1299,12 @@ export class InteractionManager<HorzScaleItem> {
 			this._resetEditingGestureStateOnly(); 
 			return; // Handled editing flow
 		}
- 
+
 		// --- 3. Standalone Click (in empty space or on external UI) ---
 		// This block is reached ONLY if no creation or editing gesture was active.
 		const timeDeltaFinal = performance.now() - this._mouseDownTime;
 		const distanceMovedFinal = this._mouseDownPoint && point ? point.subtract(this._mouseDownPoint).length() : 0;
- 
+
 		// This handles short clicks. Long clicks (non-drag, non-create, non-edit) also fall through here.
 		// If it's a short click, we need to decide if it was on the chart.
 		const wasAShortClick = (timeDeltaFinal < CLICK_TIMEOUT && distanceMovedFinal <= DRAG_THRESHOLD && point);
@@ -1357,26 +1374,6 @@ export class InteractionManager<HorzScaleItem> {
 	 *
 	 * @private
 	 */
-	/*
-	private _resetEditingGestureStateOnly(): void {
-		
-		// Clear Override
-        // Important: Clear the override BEFORE nulling _draggedTool
-		if (this._draggedTool) {
-			this._draggedTool.setOverrideCursor(null);
-		}
-		// Clear the stored cursor state so the next click starts fresh
-        this._activeDragCursor = null;
-		
-		this._isEditing = false;
-		this._draggedTool = null;
-		this._draggedPointIndex = null;
-		this._dragStartPoint = null;
-		this._originalDragPoints = null;
-		this._chart.applyOptions({ handleScroll: { pressedMouseMove: true } });
-	}
-	*/
-
 	private _resetEditingGestureStateOnly(): void {
 		
 		// Clear Override

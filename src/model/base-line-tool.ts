@@ -27,7 +27,7 @@ import {
 } from 'lightweight-charts';
 
 import { LineToolExport, LineToolPoint } from '../api/public-api';
-import { merge, randomHash, DeepPartial, deepCopy } from '../utils/helpers';
+import { merge, randomHash, DeepPartial, deepCopy, roundPriceToStep } from '../utils/helpers';
 import { 
 	LineToolOptionsInternal,
 	LineToolType,
@@ -1067,29 +1067,33 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	 */
 	public screenPointToPoint(point: Point): LineToolPoint | null {
 		const timeScale = this._chart.timeScale();
-		const price = this._series.coordinateToPrice(point.y as Coordinate);
+		const rawPrice = this._series.coordinateToPrice(point.y as Coordinate);
 
 		// Get the logical index from the screen X coordinate.
 		const logical = timeScale.coordinateToLogical(point.x as Coordinate);
 		
-		if (logical === null) {
+		if (logical === null || rawPrice === null) {
 			return null;
 		}
 
+		// --- INTERJECTED ROUNDING LOGIC ---
+		const options = this._series.options() as any;
+		const minMove = options?.priceFormat?.minMove || 0.01;
+		const finalPrice = roundPriceToStep(rawPrice as number, minMove);
+
 		// Use our interpolation function to get a timestamp from the logical index.
-		// This handles cases where the logical position is in a "blank" area.
 		const interpolatedTime = interpolateTimeFromLogicalIndex(this._chart, this._series, logical);
 
-		if (interpolatedTime === null || price === null) {
-			console.warn(`[BaseLineTool] screenPointToPoint: Could not determine interpolated time or price for screen point: ${JSON.stringify(point)}.`);
+		if (interpolatedTime === null) {
+			console.warn(`[BaseLineTool] screenPointToPoint: Could not determine interpolated time for screen point: ${JSON.stringify(point)}.`);
 			return null;
 		}
 
 		return {
 			timestamp: this._horzScaleBehavior.key(interpolatedTime as HorzScaleItem) as number,
-			price: price as number,
+			price: finalPrice,
 		};
-	}
+	}	
 
 	/**
 	 * Sets the internal array of pane view components.

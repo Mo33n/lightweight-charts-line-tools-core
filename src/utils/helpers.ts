@@ -579,3 +579,64 @@ export type OmitRecursively<T extends any, K extends PropertyKey> = Omit<
 >;
 
 // #endregion DeepPartial and OmitRecursively Type Definitions
+
+// #region Conversion
+
+/**
+ * Rounds a numeric price value to the nearest valid "Step" defined by the minMove,
+ * while simultaneously eliminating floating-point math artifacts (binary jitter).
+ * 
+ * ### The Two-Stage Correction:
+ * 1. **Grid Alignment**: Snaps the price to the nearest multiple of the `minMove`. 
+ *    (e.g., If price is 12.31 and minMove is 0.25, it snaps to 12.25).
+ * 2. **Jitter Removal**: JavaScript's floating-point math often produces results 
+ *    like 12.250000000000004. This function dynamically discovers the precision 
+ *    of the `minMove` and strips away any digits beyond that depth.
+ * 
+ * @param price - The raw price value (usually from coordinateToPrice).
+ * @param minMove - The minimum price increment (Tick Size) from the series options.
+ * @returns The mathematically clean, grid-aligned price.
+ */
+export function roundPriceToStep(price: number, minMove: number): number {
+	// 1. INPUT VALIDATION
+	// If the price is non-finite or the minMove is invalid (0 or negative), 
+	// we return the input as-is to prevent division-by-zero errors.
+	if (!isFinite(price) || minMove <= 0) {
+		return price;
+	}
+
+	// 2. GRID ALIGNMENT MATH
+	// We calculate how many "ticks" fit into the current price, round that 
+	// to the nearest whole tick, and then multiply back by the tick size.
+	// We use the inverse (1/minMove) for the multiplier to improve 
+	// floating-point reliability during the division phase.
+	const inv = 1.0 / minMove;
+	const alignedPrice = Math.round(price * inv) / inv;
+
+	// 3. DYNAMIC PRECISION DISCOVERY
+	// To perform the final jitter cleanup, we must know the decimal depth.
+	// We inspect the string representation of the minMove to determine this.
+	const minMoveStr = minMove.toString();
+	let precision = 0;
+
+	// Case A: Scientific Notation (e.g., 1e-8 for high-precision crypto)
+	if (minMoveStr.includes('e')) {
+		const parts = minMoveStr.split('e');
+		// The exponent (e.g., -8) tells us the exact decimal depth.
+		precision = Math.abs(Number(parts[1]));
+	} 
+	// Case B: Standard Decimals (e.g., 0.0025)
+	else if (minMoveStr.includes('.')) {
+		precision = minMoveStr.split('.')[1].length;
+	}
+	// Case C: Whole Numbers (e.g., 1, 5, 100)
+	// Precision remains 0.
+
+	// 4. FINAL SANITIZATION
+	// .toFixed(precision) rounds the number to the specific decimal depth 
+	// defined by the asset, effectively cutting off "trailing math noise."
+	// We then convert it back to a Number to satisfy our logical data types.
+	return Number(alignedPrice.toFixed(precision));
+}
+
+// #endregion Conversion

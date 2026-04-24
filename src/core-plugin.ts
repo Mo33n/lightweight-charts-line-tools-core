@@ -28,7 +28,7 @@ import {
 	LineToolsSingleClickEventHandler,
 	LineToolsSingleClickEventParams,	
 } from './api/public-api';
-import { Delegate } from './utils/helpers';
+import { Delegate, roundPriceToStep } from './utils/helpers';
 import { LineToolPartialOptionsMap, LineToolType, IChartWidgetBase, ITimeAxisView, IPriceAxisView, IPaneView  } from './types';
 import { BaseLineTool } from './model/base-line-tool';
 import { ToolRegistry } from './model/tool-registry';
@@ -491,7 +491,17 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 			tool.applyOptions(toolData.options);
 		}
 		if (toolData.points) {
-			tool.setPoints(toolData.points);
+
+			// --- ROUNDING INJECTION: Sanitize programmatic point updates ---
+			const seriesOptions = this._series.options() as any;
+			const minMove = seriesOptions?.priceFormat?.minMove || 0.01;
+			
+			const sanitizedPoints = toolData.points.map(p => ({
+				...p,
+				price: roundPriceToStep(p.price, minMove)
+			}));
+
+			tool.setPoints(sanitizedPoints);
 		}
  
 		this._chart.applyOptions({}); // Trigger update
@@ -745,48 +755,6 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 	public unsubscribeLineToolsSingleClick(handler: LineToolsSingleClickEventHandler): void {
 		this._selectSingleClickDelegate.unsubscribe(handler);
 	}
-
-	/**
-	 * Sets the crosshair position to a specific pixel coordinate (x, y) on the chart.
-	 *
-	 * @param x - The x-coordinate (in pixels).
-	 * @param y - The y-coordinate (in pixels).
-	 * @param visible - Controls the visibility.
-	 * @param providedTime - Optional. The raw time from the chart event to prevent vertical jitter.
-	 * @returns void
-	 */
-	/*
-	public setCrossHairXY(x: number, y: number, visible: boolean, providedTime?: HorzScaleItem): void {
-		if (!visible) {
-			this.clearCrossHair();
-			return;
-		}
-
-		const chart = this._chart;
-		const mainSeries = this._series;
-
-		// 1. Get the snapped price using the interaction manager logic
-		const lineToolPoint = this._interactionManager.screenPointToLineToolPoint(new Point(x as Coordinate, y as Coordinate));
-
-		if (lineToolPoint) {
-			// 2. Determine the time. Use providedTime if available to avoid vertical line jumping.
-			// This fixes the bug where the vertical crosshair line disappears or offsets to the left.
-			const horizontalPosition: HorzScaleItem = providedTime 
-				? providedTime 
-				: lineToolPoint.timestamp as unknown as HorzScaleItem;
-
-			const priceValue: number = lineToolPoint.price;
-
-			chart.setCrosshairPosition(
-				priceValue, 
-				horizontalPosition, 
-				mainSeries as ISeriesApi<SeriesType, HorzScaleItem> 
-			);
-		} else {
-			this.clearCrossHair();
-		}
-	}
-	*/
 
 	/**
 	 * Sets the crosshair position to a specific pixel coordinate (x, y) on the chart.
@@ -1231,13 +1199,22 @@ export class LineToolsCorePlugin<HorzScaleItem> implements ILineToolsApi, ISerie
 
 		const ToolClass = this._toolRegistry.getToolClass(type);
 
+		// --- ROUNDING INJECTION: Sanitize untrusted external point data ---
+		const seriesOptions = this._series.options() as any;
+		const minMove = seriesOptions?.priceFormat?.minMove || 0.01;
+
+		const sanitizedPoints = points.map(p => ({
+			...p,
+			price: roundPriceToStep(p.price, minMove)
+		}));
+
 		const newTool = new ToolClass(
 			this,
 			this._chart,
 			this._series,
 			this._horzScaleBehavior,
 			options,
-			points,
+			sanitizedPoints, // Pass sanitized array instead of raw points
 			this._priceAxisLabelStackingManager,
 		);
 
