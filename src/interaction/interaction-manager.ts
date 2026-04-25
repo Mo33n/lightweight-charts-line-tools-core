@@ -810,6 +810,13 @@ export class InteractionManager<HorzScaleItem> {
 						);
                         constrainedScreenPoint = constraintResult.point;
 						snapAxis = constraintResult.snapAxis;
+
+						// --- PANE-AWARE COMPENSATION FIX ---
+						// If the tool locked the price, its returned Y is Pane-Relative.
+						// We add the pane offset to convert it back to Chart-Relative.
+						if (snapAxis === 'price') {
+							constrainedScreenPoint.y = (constrainedScreenPoint.y + this._getActivePaneYOffset()) as Coordinate;
+						}
 					}
 				}
  
@@ -908,6 +915,12 @@ export class InteractionManager<HorzScaleItem> {
 								this._originalDragPoints!
 							);
 							constrainedScreenPoint = constraintResult.point;
+
+							// --- PANE-AWARE COMPENSATION FIX ---
+							// Check the result directly to see if a price lock occurred.
+							if (constraintResult.snapAxis === 'price') {
+								constrainedScreenPoint.y = (constrainedScreenPoint.y + this._getActivePaneYOffset()) as Coordinate;
+							}
 						}
 					}
 
@@ -1184,6 +1197,12 @@ export class InteractionManager<HorzScaleItem> {
 						finalScreenPoint = constraintResult.point; 
                         // 2. CAPTURE HINT
                         snapAxis = constraintResult.snapAxis;
+
+						// --- PANE-AWARE COMPENSATION FIX ---
+						// Elevate the returned Pane-Relative Y back to Chart-Relative
+						if (snapAxis === 'price') {
+							finalScreenPoint.y = (finalScreenPoint.y + this._getActivePaneYOffset()) as Coordinate;
+						}
 					}
 				}
 				// --- END SHIFT CONSTRAINT LOGIC ---
@@ -1682,14 +1701,21 @@ export class InteractionManager<HorzScaleItem> {
 				if (toolBeingCreated.getShiftConstrainedPoint && originalLogicalPoint) {
 					// Apply the constraint logic using the correct anchor index
 					const constraintResult = toolBeingCreated.getShiftConstrainedPoint( // <<< CHANGE: Capture ConstraintResult
-						anchorIndexBeingDragged, 
-						rawScreenPoint, 
+						anchorIndexBeingDragged,
+						rawScreenPoint,
 						phase,
 						originalLogicalPoint,
 						allOriginalLogicalPoints
 					);
 					// Extract the Point from the result for ghosting
 					finalScreenPoint = constraintResult.point; // <<< CHANGE: Extract Point property
+
+					// --- PANE-AWARE COMPENSATION FIX FOR GHOSTING ---
+					// Elevate the returned Pane-Relative Y back to Chart-Relative 
+					// so the ghost line renders exactly where it belongs.
+					if (constraintResult.snapAxis === 'price') {
+						finalScreenPoint.y = (finalScreenPoint.y + this._getActivePaneYOffset()) as Coordinate;
+					}
 				}
 			}
 
