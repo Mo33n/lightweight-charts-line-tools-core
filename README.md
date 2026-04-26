@@ -82,7 +82,7 @@ const chart = createChart(document.getElementById('chart-container'));
 // Lightweight Charts v5 way to add a series
 const series = chart.addSeries(CandlestickSeries, {
     // optional series options
-});
+}, 0); //0 at the end is what pane you want the series to belong to
 
 // Initialize the Core Orchestrator
 const lineTools = createLineToolsPlugin(chart, series);
@@ -280,17 +280,17 @@ const chart = createChart(document.getElementById('chart-container'), {
 // 1. Create the Main Price Series (Pane 0 by default)
 const mainSeries = chart.addSeries(
     CandlestickSeries,
-    {},
-    0 // Pane index
-);
+    {
+        //options
+    }, 0); // 0 is Pane index
 
 // 2. Create an Indicator Series in a New Pane (Pane 1)
-// Note: The Pane Index is the 3rd argument of addSeries
 const rsiSeries = chart.addSeries(
 	LineSeries, 
-	{ title: 'RSI' }, 
-	1 // Pane index
-);
+	{ 
+        title: 'RSI' 
+        //more options
+    }, 1); // 1 is Pane index
 
 // 3. Initialize a Core Orchestrator for each Series
 // Each instance will independently manage the drawings for its own pane.
