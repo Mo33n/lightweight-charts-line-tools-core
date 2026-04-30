@@ -902,6 +902,9 @@ export class InteractionManager<HorzScaleItem> {
 					// --- Determine the Screen Point: Raw Mouse OR Shift-Constrained ---
 					let constrainedScreenPoint: Point = point;
 
+					// Declare a variable to capture the axis hint from the constraint engine
+					let snapAxis: SnapAxis = 'none';
+
 					// Apply Shift Constraint (This is where the N/S, E/W lock logic is applied)
 					if (this._isShiftKeyDown) {
 						const originalLogicalPoint = this._originalDragPoints![anchorIndex];
@@ -916,6 +919,9 @@ export class InteractionManager<HorzScaleItem> {
 							);
 							constrainedScreenPoint = constraintResult.point;
 
+							// Save the hint so we can use it to bypass pixel conversion below
+							snapAxis = constraintResult.snapAxis;
+
 							// --- PANE-AWARE COMPENSATION FIX ---
 							// Check the result directly to see if a price lock occurred.
 							if (constraintResult.snapAxis === 'price') {
@@ -925,7 +931,25 @@ export class InteractionManager<HorzScaleItem> {
 					}
 
 					// FINAL STEP: Convert the (potentially) constrained screen point to a fully snapped logical point
-					const targetLogicalPoint = this.screenPointToLineToolPoint(constrainedScreenPoint);
+					let targetLogicalPoint = this.screenPointToLineToolPoint(constrainedScreenPoint);
+
+					// --- START SYNCHRONOUS LOGICAL SNAP FIX (EDITING) ---
+					// Bypass the lossy Pixel-to-Price round-trip.
+					// If the Shift key locked us to an axis, we ignore the pixel conversion entirely 
+					// and perfectly clone the exact logical value from the reference anchor.
+					if (targetLogicalPoint && snapAxis !== 'none') {
+						const constraintSourceIndex = anchorIndex === 0 ? 1 : 0;
+						const referenceLogicalPoint = this._originalDragPoints![constraintSourceIndex];
+
+						if (referenceLogicalPoint) {
+							if (snapAxis === 'time') {
+								targetLogicalPoint.timestamp = referenceLogicalPoint.timestamp;
+							} else if (snapAxis === 'price') {
+								targetLogicalPoint.price = referenceLogicalPoint.price;
+							}
+						}
+					}
+					// --- END SYNCHRONOUS LOGICAL SNAP FIX ---
 
 					// Final update call
 					if (targetLogicalPoint) {
@@ -978,13 +1002,19 @@ export class InteractionManager<HorzScaleItem> {
 					}
 
 					const logicalIndexDelta = newP0LogicalIndex - initialP0LogicalIndex;
-					const priceTranslationVector = newLogicalP0.price - initialLogicalP0.price;
+
+					// BUG 1 FIX: Calculate the raw vector, but do not use it directly.
+					const rawPriceTranslationVector = newLogicalP0.price - initialLogicalP0.price;
 
 					const newLogicalPoints: LineToolPoint[] = [];
 
 					// --- ROUNDING INJECTION: Extract minMove for translation ---
 					const seriesOptions = this._series.options() as any;
 					const minMove = seriesOptions?.priceFormat?.minMove || 0.01;
+
+					// Perfectly round the translation vector itself to the minMove tick size.
+					// This prevents pixel-to-price floating-point noise from jumping the tool by 0.25.
+					const priceTranslationVector = roundPriceToStep(rawPriceTranslationVector, minMove);
 
 					// 5. Apply the Logical Translation Vector to all original points.
 					for (let i = 0; i < this._originalDragPoints.length; i++) {
