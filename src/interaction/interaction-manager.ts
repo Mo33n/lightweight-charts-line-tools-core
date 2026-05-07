@@ -73,7 +73,7 @@ export class InteractionManager<HorzScaleItem> {
 	private _lastCrosshairX: Coordinate | null = null;
 
 	private _lastSnapLogical: number | null = null;
-	private _lastSnapCandidates: { y: number; price: number }[] = [];
+	private _lastSnapCandidates: { price: number; series: any }[] = [];
 
 	/**
 	 * Lock State — when true, all mouse interactions are suppressed.
@@ -139,7 +139,8 @@ export class InteractionManager<HorzScaleItem> {
 		this._subscribeToChartEvents();
 	}
 
-	public screenPointToLineToolPoint(screenPoint: Point): LineToolPoint | null {
+	// Add an optional bypass parameter to keep magnet active for unconstrained points
+	public screenPointToLineToolPoint(screenPoint: Point, bypassMagnet: boolean = false): LineToolPoint | null {
 		const timeScale = this._chart.timeScale();
 
 		// --- 1. DETERMINE INPUT Y (Price) ---
@@ -147,8 +148,8 @@ export class InteractionManager<HorzScaleItem> {
 		let targetY: Coordinate = screenPoint.y as Coordinate;
 		let snappedPrice: number | undefined = undefined;
 
-		// Prioritize Shift Key constraint over the Magnet Engine
-		if (!this._isShiftKeyDown) {
+		// Prioritize Shift Key constraint over the Magnet Engine only if bypassed
+		if (!bypassMagnet) {
 			const snapResult = this._getSnappedY(screenPoint.x, screenPoint.y);
 			targetY = snapResult.y;
 			snappedPrice = snapResult.price;
@@ -160,12 +161,13 @@ export class InteractionManager<HorzScaleItem> {
 
 		// --- BOUNDARY CLAMPING ---
 		const paneHeight = this._getActivePaneHeight();
-		if (normalizedY < 0) {
-			normalizedY = 0 as Coordinate;
-			snappedPrice = undefined; 
-		} else if (normalizedY > paneHeight) {
-			normalizedY = paneHeight as Coordinate;
-			snappedPrice = undefined; 
+		// Skip clamping if we have a snapped price to prevent destroying native price data
+		if (snappedPrice === undefined) {
+			if (normalizedY < 0) {
+				normalizedY = 0 as Coordinate;
+			} else if (normalizedY > paneHeight) {
+				normalizedY = paneHeight as Coordinate;
+			}
 		}
 
 		const rawPrice = this._series.coordinateToPrice(normalizedY);			
@@ -489,16 +491,13 @@ export class InteractionManager<HorzScaleItem> {
 		}
 
 		// --- 4. CACHE ARBITRATION & LOGGING ---
-		// We store the exact price alongside the Y pixel to ensure mathematical consistency.
-		let candidates: { y: number; price: number }[] = [];
+		// We store the raw prices alongside their series references to avoid scaling-related pixel drift.
+		let candidateSources: { price: number; series: any }[] = [];
 
 		if (!isLiveCandle && this._lastSnapLogical === roundedLogical) {
 			// --- FAST PATH: CACHE HIT ---
-			candidates = this._lastSnapCandidates as { y: number; price: number }[];
+			candidateSources = this._lastSnapCandidates;
 		} else {
-			// --- SLOW PATH: DATA SCAN ---
-			const paneTop = targetPane.top;
-
 			targetPane.series.forEach((s: ISeriesApi<SeriesType, HorzScaleItem>) => {
 				const dataAtTime = s.dataByIndex(roundedLogical as any, 0) as any;
 				if (!dataAtTime) return;
@@ -508,24 +507,32 @@ export class InteractionManager<HorzScaleItem> {
 					const ohlc = [dataAtTime.open, dataAtTime.high, dataAtTime.low, dataAtTime.close];
 					for (const val of ohlc) {
 						if (val !== undefined) {
-							const localY = s.priceToCoordinate(val);
-							// Store the native price (val) next to the calculated pixel (localY)
-							if (localY !== null) candidates.push({ y: localY + paneTop, price: val });
+							candidateSources.push({ price: val, series: s });
 						}
 					}
 				} else if (dataAtTime.value !== undefined) {
 					// Line/Area Series: Snap to the single data value
-					const localY = s.priceToCoordinate(dataAtTime.value);
-					if (localY !== null) candidates.push({ y: localY + paneTop, price: dataAtTime.value });
+					candidateSources.push({ price: dataAtTime.value, series: s });
 				}
 			});
 
 			// Only store in the persistent cache if this is a historical (static) candle.
 			if (!isLiveCandle) {
 				this._lastSnapLogical = roundedLogical;
-				this._lastSnapCandidates = candidates;
+				this._lastSnapCandidates = candidateSources;
 			}
 		}
+
+		// Recalculate converted pixel coordinates fresh for the current frame to prevent zoom-related drift
+		const paneTop = targetPane.top;
+		const candidates: { y: number; price: number }[] = [];
+
+		candidateSources.forEach(source => {
+			const localY = source.series.priceToCoordinate(source.price);
+			if (localY !== null) {
+				candidates.push({ y: localY + paneTop, price: source.price });
+			}
+		});
 
 		if (candidates.length === 0) return { y: y as Coordinate };
 
@@ -779,11 +786,12 @@ export class InteractionManager<HorzScaleItem> {
  
 			// Safety check: If not supported, rely on _handleCrosshairMove for ghosting and exit
 			if (!isDragCreationSupported && !this._isDrag) {
-				return; 
+				return; 
 			}
 
 			if (this._isDrag && isDragCreationSupported) {
-				const p0LocationLogical = this.screenPointToLineToolPoint(this._mouseDownPoint);
+				// Force magnet snapping for P0 since it is the unconstrained origin point
+				const p0LocationLogical = this.screenPointToLineToolPoint(this._mouseDownPoint, false);
 				let constrainedScreenPoint: Point = point;
 
 				// ADDED: Variable to capture the axis hint
@@ -820,12 +828,12 @@ export class InteractionManager<HorzScaleItem> {
 					}
 				}
  
-				// Use the (potentially) constrained screen point for the logical conversion
-				let constrainedLogicalPoint = this.screenPointToLineToolPoint(constrainedScreenPoint);
+				// Pass Shift status to bypass magnet only on the constrained moving point
+				let constrainedLogicalPoint = this.screenPointToLineToolPoint(constrainedScreenPoint, this._isShiftKeyDown);
 
 				// --- SYNCHRONOUS LOGICAL SNAP (APPLIED CONTINUOUSLY DURING DRAG) ---
                 if (constrainedLogicalPoint && snapAxis !== 'none') {
-                    const P0 = p0LocationLogical; // P0 is the point at the start of the drag
+                    const P0 = tool.getPoint(0) || p0LocationLogical; // Prioritize committed point over mouse-down logic
                     
                     if (P0) {
                         if (snapAxis === 'time') {
@@ -836,7 +844,7 @@ export class InteractionManager<HorzScaleItem> {
                         } else if (snapAxis === 'price') {
                             constrainedLogicalPoint = {
                                 timestamp: constrainedLogicalPoint.timestamp,
-                                price: P0.price,
+                                price: P0.price, // Bypass lossy round-trip converting back from screen pixel
                             };
                         }
                     }
@@ -1239,7 +1247,8 @@ export class InteractionManager<HorzScaleItem> {
 
                 // --- START SYNCHRONOUS LOGICAL SNAP FIX ---
 				// 1. Convert the (potentially) constrained screen point into a logical point
-				let finalLogicalPoint: LineToolPoint | null = this.screenPointToLineToolPoint(finalScreenPoint);
+				const isConstrained = this._isShiftKeyDown && tool.getPermanentPointsCount() > 0;
+				let finalLogicalPoint: LineToolPoint | null = this.screenPointToLineToolPoint(finalScreenPoint, isConstrained);
 				//console.log('finalLogicalPoint after let', JSON.parse(JSON.stringify(finalLogicalPoint)))
 
                 // Check if we are placing P1 (point index 1) which is where the constraint applies
@@ -1700,6 +1709,8 @@ export class InteractionManager<HorzScaleItem> {
 
 			let finalScreenPoint: Point | null = rawScreenPoint;
 
+			let snapAxis: SnapAxis = 'none';
+
 			// NEW: Check if the tool supports click-click creation (ghosting is part of this)
 			const supportsClickClick = toolBeingCreated.supportsClickClickCreation?.() !== false;
 
@@ -1740,6 +1751,9 @@ export class InteractionManager<HorzScaleItem> {
 					// Extract the Point from the result for ghosting
 					finalScreenPoint = constraintResult.point; // <<< CHANGE: Extract Point property
 
+					// --- ADD THIS LINE TO CAPTURE THE HINT ---
+					snapAxis = constraintResult.snapAxis;
+
 					// --- PANE-AWARE COMPENSATION FIX FOR GHOSTING ---
 					// Elevate the returned Pane-Relative Y back to Chart-Relative 
 					// so the ghost line renders exactly where it belongs.
@@ -1751,9 +1765,21 @@ export class InteractionManager<HorzScaleItem> {
 
 			if (finalScreenPoint) {
 				// All points are chart-relative here, so the math is safe
-				const logicalPoint = this.screenPointToLineToolPoint(finalScreenPoint);
+				const logicalPoint = this.screenPointToLineToolPoint(finalScreenPoint, isShiftKeyDown);
 
 				if (logicalPoint) {
+					// Apply the synchronous snap fix to ghosting during click-click drawing
+					if (toolBeingCreated.points().length > 0 && snapAxis !== 'none') {
+						const P0 = toolBeingCreated.getPoint(0);
+						if (P0) {
+							if (snapAxis === 'time') {
+								logicalPoint.timestamp = P0.timestamp;
+							} else if (snapAxis === 'price') {
+								logicalPoint.price = P0.price;
+							}
+						}
+					}
+
 					// Use rawScreenPoint (already checked for null) instead of force-asserting params.point!
 					if (params.time && rawScreenPoint && this._isMouseInActivePane(rawScreenPoint.y)) {
 						this._plugin.setCrossHairXY(rawScreenPoint.x, rawScreenPoint.y, true, params.time);
@@ -1770,7 +1796,7 @@ export class InteractionManager<HorzScaleItem> {
 				toolBeingCreated.setLastPoint(null);
 			}
 
-			this._plugin.requestUpdate(); 
+			this._plugin.requestUpdate(); 
 			return;
 		}
 
